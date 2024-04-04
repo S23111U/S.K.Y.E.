@@ -96,7 +96,6 @@ if __name__ == '__main__':
         print("Listening...")
         speech = command()
 
-        # todo: Opening the sites
         sites = [["youtube", "https://youtube.com"], ["wikipedia", "https://wikipedia.com"],
                  ["google", "https://google.com"]]
 
