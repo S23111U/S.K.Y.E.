@@ -5,13 +5,7 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="6874bf15-c854-4239-b396-bf0c76a4d455" name="Changes" comment="V1.0">
-      <change afterPath="$PROJECT_DIR$/GenAI.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/client.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/current_time.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/greet.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/weather.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -88,7 +82,7 @@
       <ReportDescription localRun="true" path="C:\Users\swetu\AppData\Local\Temp\qodana_output\qodana.sarif.json" reportGuid="c8114646-e02a-4acb-814b-daca06461854" reportId="main.py/qodana/2024-04-06" />
     </option>
   </component>
-  <component name="RunManager" selected="Python.weather">
+  <component name="RunManager" selected="Python.client">
     <configuration name="client" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
       <module name="JARVIS" />
       <option name="ENV_FILES" value="" />
@@ -201,9 +195,9 @@
     </configuration>
     <recent_temporary>
       <list>
-        <item itemvalue="Python.weather" />
         <item itemvalue="Python.client" />
         <item itemvalue="Python.main" />
+        <item itemvalue="Python.weather" />
         <item itemvalue="Python.greet" />
         <item itemvalue="Python.current_time" />
       </list>
