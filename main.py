@@ -15,19 +15,23 @@ from greet import Greetings
 # For weather
 from weather import Get_Info
 
+# For alarm
+from set_alarm import set_alarm
+
 HOST = '192.168.1.21'
 PORT = 12345
+youtube_pattern = re.compile(r'\bon youtube\b', re.IGNORECASE)
+wikipedia_pattern = re.compile(r'\bon wikipedia\b', re.IGNORECASE)
 sites = [["youtube", "https://youtube.com"], ["wikipedia", "https://wikipedia.com"], ["google", "https://google.com"],
          ["spotify", "https://open.spotify.com"]]
 time, city, temp, sky, pos = Get_Info()
-youtube_pattern = re.compile(r'\bon youtube\b', re.IGNORECASE)
-wikipedia_pattern = re.compile(r'\bon wikipedia\b', re.IGNORECASE)
 
 
 def response_condition(speech):
-    # Entry
+    # Entry------------------------------------------- 
     if f"Hey JARVIS".lower() in speech.lower():
         return Greetings() + "..."
+    # -------------------------------------------
 
     # Feature 1: Opening sites
     for site in sites:
@@ -61,17 +65,29 @@ def response_condition(speech):
     if f"what's the time".lower() in speech.lower():
         return "The time is, " + TellTime() + ", sir" + "..."
 
+    # Feature 4: Current weather conditions
     if f"the weather".lower() in speech.lower():
         return (f"The weather conditions in {city}  as of {time} are, temperature is {temp}, sky is {sky} "
                 f"and wind is {pos} kilometer per hour" + "...")
 
-    # Exit
+    # Feature 5: Set an alarm
+    if f"set an alarm".lower() in speech.lower():
+        speech = speech.replace("Hey", "")
+        speech = speech.replace("JARVIS", "")
+        speech = speech.replace("for", "")
+        speech = speech.replace("set an alarm", "")
+        set_alarm(speech)
+        return f"Alarm set for {speech}, sir"
+
+    # Exit------------------------------------------- 
     if f"That's it for now".lower() in speech.lower():
         return "I'll be glad to help you again, sir" + "..."
+    # ------------------------------------------- 
 
     return "Didn't understand, sir" + "..."
 
 
+# Connection Acceptance
 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
     server_socket.bind((HOST, PORT))
 
@@ -87,8 +103,10 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
             if not data:
                 break
 
+            # Receive data from client
             print(f"Received from client: {data.decode()}")
             data_received = data.decode()
 
+            #Send specific result based on the request
             response = response_condition(data_received)
             conn.sendall(response.encode())
