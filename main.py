@@ -27,6 +27,8 @@ from set_reminder import set_reminder
 # For news
 from news import latestnews
 
+# pywhatkit
+
 # Variable List
 HOST = '192.0.0.2'
 PORT = 12345
@@ -135,25 +137,29 @@ def response_condition(speech):
 
 
 # Connection Acceptance
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
-    server_socket.bind((HOST, PORT))
+def ServerStart():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server_socket:
+        server_socket.bind((HOST, PORT))
 
-    server_socket.listen()
-    print(f"Server is listening for connection on {HOST, PORT}")
+        server_socket.listen()
+        print(f"Server is listening for connection on {HOST, PORT}")
 
-    conn, addr = server_socket.accept()
-    with conn:
-        print(f"Connected by {addr}")
+        conn, addr = server_socket.accept()
+        with conn:
+            print(f"Connected by {addr}")
 
-        while True:
-            data = conn.recv(1024)
-            if not data:
-                break
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
 
-            # Receive data from client
-            print(f"Received from client: {data.decode()}")
-            data_received = data.decode()
+                # Receive data from client
+                print(f"Received from client: {data.decode()}")
+                data_received = data.decode()
 
-            # Send specific result based on the request
-            response = response_condition(data_received)
-            conn.sendall(response.encode())
+                # Send specific result based on the request
+                response = response_condition(data_received)
+                conn.sendall(response.encode())
+
+if __name__ == "__main__":
+    ServerStart()
