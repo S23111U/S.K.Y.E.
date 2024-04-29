@@ -24,8 +24,11 @@ from set_alarm import set_alarm
 # For reminder
 from set_reminder import set_reminder
 
+# For news
+from news import latestnews
+
 # Variable List
-HOST = '192.168.1.19'
+HOST = '192.0.0.2'
 PORT = 12345
 youtube_pattern = re.compile(r'\bon youtube\b', re.IGNORECASE)
 wikipedia_pattern = re.compile(r'\bon wikipedia\b', re.IGNORECASE)
@@ -86,7 +89,7 @@ def response_condition(speech):
 
     # Feature 6: Read out the news
     if f"news".lower() in speech.lower():
-        pass
+        latestnews()
 
     if f"open app".lower() in speech.lower():
         # speech = speech.replace("open ", "")
