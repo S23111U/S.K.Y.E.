@@ -30,7 +30,7 @@ from news import latestnews
 # pywhatkit
 
 # Variable List
-HOST = '192.0.0.2'
+HOST = '192.168.1.14'
 PORT = 12345
 youtube_pattern = re.compile(r'\bon youtube\b', re.IGNORECASE)
 wikipedia_pattern = re.compile(r'\bon wikipedia\b', re.IGNORECASE)

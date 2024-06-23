@@ -2,7 +2,7 @@ import socket
 import win32com.client
 import speech_recognition as sr
 
-HOST = '192.168.1.21'
+HOST = '192.168.1.14'
 PORT = 12345
 speaker = win32com.client.Dispatch("SAPI.SpVoice")
 
