@@ -1,65 +1,71 @@
 import requests
 import json
-# from main import ServerStart
+import speech_recognition as sr
+import pyttsx3
 
-def latestnews():
-    APICollection = {"business":"https://newsapi.org/v2/top-headlines?country=in&category=business&apiKey=09172b8b482344c8991c442c9b283c45",
-                     "entertainment":"https://newsapi.org/v2/top-headlines?country=in&category=entertainment&apiKey=09172b8b482344c8991c442c9b283c45",
-                     "health":"https://newsapi.org/v2/top-headlines?country=in&category=health&apiKey=09172b8b482344c8991c442c9b283c45",
-                     "science":"https://newsapi.org/v2/top-headlines?country=in&category=science&apiKey=09172b8b482344c8991c442c9b283c45",
-                     "sports":"https://newsapi.org/v2/top-headlines?country=in&category=sports&apiKey=09172b8b482344c8991c442c9b283c45",
-                     "technology":"https://newsapi.org/v2/top-headlines?country=in&category=technology&apiKey=09172b8b482344c8991c442c9b283c45",
-                    #  "india":"https://newsapi.org/v2/top-headlines?country=in&apiKey=09172b8b482344c8991c442c9b283c45"
-                     }
+def speak(text):
+    engine = pyttsx3.init()
+    engine.say(text)
+    engine.runAndWait()
+
+def listen():
+    recognizer = sr.Recognizer()
+    with sr.Microphone() as source:
+        print("Listening...")
+        audio = recognizer.listen(source)
+        try:
+            query = recognizer.recognize_google(audio)
+            print(f"You said: {query}")
+            return query
+        except sr.UnknownValueError:
+            speak("Sorry, I didn't catch that. Could you please repeat?")
+            return listen()
+        except sr.RequestError:
+            speak("Sorry, my speech service is down. Please try again later.")
+            return None
+
+def latestnews(query):
+    API_KEY = 'pub_5670735eeb1d2e0dd7dd2a770cb429eb37f8f'
+    url = f'https://newsdata.io/api/1/latest?apikey={API_KEY}&q={query}'
+    response = requests.get(url)
+
+    if response.status_code != 200:
+        speak("Failed to retrieve news")
+        return
     
-    content = None
-    url = None
+    news = response.json()
+    articles = news.get('results', [])
 
-    field = input("Choose the category: \n1. business\n2. entertainment\n3. health\n4. science\n5. sports\n6. technology\n7. india\nEnter name of category:")
+    speak("Top 5 News Titles:")
+    for i, article in enumerate(articles[:5]):
+        title = article.get('title')
+        speak(f"{i+1}. {title}")
 
-    # code to implement
-    # say("I have searched for these category for country India: Business, Entertainment, Health, Science, Sports, Technology")
-    # field = speech_to_text(input)
+    speak("Do you wish to know more about any of these news?")
+    knowmorechoice = listen().lower()
 
-    for key, value in APICollection.items():
-        if key.lower() in field.lower():
-            url = value
-            # say(news found for the category {field})
-            print(url)
-            print("URL Found!!!")
-            break
-
+    if knowmorechoice == "yes":
+        speak("Enter the number of the title you want to know more about:")
+        choice = int(listen())
+        if 1 <= choice <= 5:
+            selected_article = articles[choice-1]
+            title = selected_article.get('title')
+            description = selected_article.get('description')
+            speak(f"Title: {title}\nDescription: {description}")
         else:
-            url = True
-            if url is True:
-                print("URL Not Found!!!")
-                # say(news not found)
+            speak("Invalid choice")
 
-    news = requests.get(url).text
-    news = json.loads(news)
-
-    print("News:\n")
-    arts = news["articles"]
-    for articles in arts:
-        article = articles["title"]
-        print(article)
-        # say(article)
-        news_url = articles["url"]
-        print(f"know more...\n{news_url}")
-
-        a = input("To continue...Press 1\nTo stop...Press 2\nEnter choice:")
-        # say("Do you want more news?")
-        # a = speech_to_text(input - yes, no)
-        if str(a) == "1":
-            # str(a) == "yes"
-            pass
-        elif str(a) == "2":
-            #str(a) == "no"
+def callingfetchnews():
+    while True:
+        speak("For which topic do you want to listen to the news, sir?")
+        query = listen().lower()
+        if query:
+            latestnews(query)
+        speak("Shall I fetch more news for you?")
+        continue_choice = listen().lower()
+        if continue_choice != 'yes':
+            speak("That's it for news now.")
             break
 
-# latestnews()
-
-
-# try this approach
-# response = news + know more and the continue condition
-# conn.sendall(response.encode())
+if __name__ == "__main__":
+    callingfetchnews()
