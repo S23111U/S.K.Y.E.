@@ -25,12 +25,12 @@ from set_alarm import set_alarm
 from set_reminder import set_reminder
 
 # For news
-from news import latestnews
+from news import callingfetchnews
 
 # pywhatkit
 
 # Variable List
-HOST = '192.168.1.14'
+HOST = '0.0.0.0'
 PORT = 12345
 youtube_pattern = re.compile(r'\bon youtube\b', re.IGNORECASE)
 wikipedia_pattern = re.compile(r'\bon wikipedia\b', re.IGNORECASE)
@@ -91,14 +91,17 @@ def response_condition(speech):
 
     # Feature 6: Read out the news
     if f"news".lower() in speech.lower():
-        latestnews()
+        callingfetchnews()
 
     if f"open app".lower() in speech.lower():
-        # speech = speech.replace("open ", "")
         open_whatsapp()
         return "Opening whatsapp sir" + "..."
 
-    # Feature No.: Searching on the internet
+    # Feature 7: Access code
+    if f"can you access this code".lower() in speech.lower():
+        return "Accessing the code is possible. Please specify which code you would like to access." + "..."
+
+    # Feature 8: Searching on the internet
     if (f"search for".lower() in speech.lower()) or forAi:
         # On YOUTUBE
         if youtube_pattern.search(speech):
