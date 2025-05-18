@@ -1,5 +1,4 @@
 import requests
-import json
 import speech_recognition as sr
 import pyttsx3
 
@@ -14,7 +13,7 @@ def listen():
         print("Listening...")
         audio = recognizer.listen(source)
         try:
-            query = recognizer.recognize_google(audio)
+            query = recognizer.recognize_google(audio, language="en-IN")
             print(f"You said: {query}")
             return query
         except sr.UnknownValueError:
