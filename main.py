@@ -35,10 +35,9 @@ PORT = 12345
 youtube_pattern = re.compile(r'\bon youtube\b', re.IGNORECASE)
 wikipedia_pattern = re.compile(r'\bon wikipedia\b', re.IGNORECASE)
 sites = [["youtube", "https://youtube.com"], ["wikipedia", "https://wikipedia.com"], ["google", "https://google.com"],
-         ["spotify", "https://open.spotify.com"], ["whatsapp", ""]]
+         ["spotify", "https://open.spotify.com"]]
 weather_time, city, temp, sky, pos = Get_Info()
 forAi = False
-
 
 def response_condition(speech):
     global forAi

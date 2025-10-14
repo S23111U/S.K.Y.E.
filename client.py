@@ -1,10 +1,9 @@
 import socket
-import win32com.client
+import pyttsx3
 import speech_recognition as sr
 
 HOST = '127.0.0.1'
 PORT = 12345
-speaker = win32com.client.Dispatch("SAPI.SpVoice")
 
 
 def command():
@@ -20,11 +19,6 @@ def command():
             print(e)
             return "Couldn't Understand Sir. Can you repeat again?"
 
-
-def say(text):
-    speaker.Speak(text)
-
-
 def receive_all(sock):
     buffer = b''
     delimiter = b'...'
@@ -37,15 +31,23 @@ def receive_all(sock):
             break
     return buffer
 
+def say(text):
+    pyttsx3.speak(text)
 
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
-    client_socket.connect((HOST, PORT))
+if __name__ == "__main__":
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
+        client_socket.connect((HOST, PORT))
 
-    while True:
-        print("Listening...")
-        message = command()
-        client_socket.sendall(message.encode())
-        response = receive_all(client_socket)
+        while True:
+            print("Listening...")
+            message = command()
+            try:
+                client_socket.sendall(message.encode())
+            except BrokenPipeError:
+                print("Connection closed by server")
+                break
+            response = receive_all(client_socket)
 
-        print(f"Response from server:\n{response.decode()}")
-        say(response.decode())
+            decoded = response.decode()
+            print(f"Response from server:\n{decoded}")
+            say(decoded)
