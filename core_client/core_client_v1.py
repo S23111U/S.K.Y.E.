@@ -3,41 +3,46 @@ import socket
 import webbrowser
 import re
 import wikipedia
-from fileOpen import open_whatsapp
+from helper_functions.fileOpen import open_whatsapp
 import threading
 
 # For web search
-from GenAI import GenAI_search
+from helper_functions.GenAI import GenAI_search
 
 # For current time
-from current_time import TellTime
+from helper_functions.current_time import TellTime
 
 # For greetings
-from greet import Greetings
+from helper_functions.greet import Greetings
 
 # For weather
-from weather import Get_Info
+from helper_functions.weather import Get_Info
 
 # For alarm
-from set_alarm import set_alarm
+from helper_functions.set_alarm import set_alarm
 
 # For reminder
-from set_reminder import set_reminder
+from helper_functions.set_reminder import set_reminder
 
 # For news
-from news import callingfetchnews
+from helper_functions.news import callingfetchnews
 
 # pywhatkit
 
 # Variable List
-HOST = '0.0.0.0'
+HOST = "0.0.0.0"
 PORT = 12345
-youtube_pattern = re.compile(r'\bon youtube\b', re.IGNORECASE)
-wikipedia_pattern = re.compile(r'\bon wikipedia\b', re.IGNORECASE)
-sites = [["youtube", "https://youtube.com"], ["wikipedia", "https://wikipedia.com"], ["google", "https://google.com"],
-         ["spotify", "https://open.spotify.com"]]
+youtube_pattern = re.compile(r"\bon youtube\b", re.IGNORECASE)
+wikipedia_pattern = re.compile(r"\bon wikipedia\b", re.IGNORECASE)
+sites = [
+    ["youtube", "https://youtube.com"],
+    ["wikipedia", "https://wikipedia.com"],
+    ["google", "https://google.com"],
+    ["spotify", "https://open.spotify.com"],
+]
 weather_time, city, temp, sky, pos = Get_Info()
 forAi = False
+
 
 def response_condition(speech):
     global forAi
@@ -58,12 +63,14 @@ def response_condition(speech):
 
     # Feature 3: Current weather conditions
     if f"the weather".lower() in speech.lower():
-        return (f"The weather conditions in {city}  as of {weather_time} are, temperature is {temp}, sky is {sky} "
-                f"and wind is {pos} kilometer per hour" + "...")
+        return (
+            f"The weather conditions in {city}  as of {weather_time} are, temperature is {temp}, sky is {sky} "
+            f"and wind is {pos} kilometer per hour" + "..."
+        )
 
     # Feature 4: Set an alarm
     if f"set an alarm".lower() in speech.lower():
-        pattern = r'\b\d{1,2}:\d{2}\s*[ap]\.m\.'
+        pattern = r"\b\d{1,2}:\d{2}\s*[ap]\.m\."
         match = re.search(pattern, speech, re.IGNORECASE)
         if match:
             time = match.group(0)
@@ -76,13 +83,19 @@ def response_condition(speech):
 
     # Feature 5: Set a reminder
     if f"remind me".lower() in speech.lower():
-        pattern = r'remind me to (.+?) at (\d+:\d+ [ap]\.m\.)'
+        pattern = r"remind me to (.+?) at (\d+:\d+ [ap]\.m\.)"
         match = re.search(pattern, speech, re.IGNORECASE)
         if match:
             task = match.group(1)
             time = match.group(2)
             time = time.replace(".", "").lower()
-            reminder_thread = threading.Thread(target=set_reminder, args=(time, task,))
+            reminder_thread = threading.Thread(
+                target=set_reminder,
+                args=(
+                    time,
+                    task,
+                ),
+            )
             reminder_thread.start()
             return f"Reminder set to {task} at {time}, sir" + "..."
         else:
@@ -98,23 +111,28 @@ def response_condition(speech):
 
     # Feature 7: Access code
     if f"can you access this code".lower() in speech.lower():
-        return "Accessing the code is possible. Please specify which code you would like to access." + "..."
+        return (
+            "Accessing the code is possible. Please specify which code you would like to access."
+            + "..."
+        )
 
     # Feature 8: Searching on the internet
     if (f"search for".lower() in speech.lower()) or forAi:
         # On YOUTUBE
         if youtube_pattern.search(speech):
             forAi = False
-            speech = youtube_pattern.sub('', speech)
+            speech = youtube_pattern.sub("", speech)
             speech = speech.replace("search for", "")
-            youtube_link = "https://www.youtube.com/results?search_query=" + speech.strip()
+            youtube_link = (
+                "https://www.youtube.com/results?search_query=" + speech.strip()
+            )
             webbrowser.open(youtube_link)
             return "Opening sir" + "..."
 
         # On Wikipedia
         elif wikipedia_pattern.search(speech):
             forAi = False
-            speech = wikipedia_pattern.sub('', speech)
+            speech = wikipedia_pattern.sub("", speech)
             speech = speech.replace("search for", "")
             result = wikipedia.summary(speech, sentences=2)
             return result + "..."
@@ -162,6 +180,7 @@ def ServerStart():
                 # Send specific result based on the request
                 response = response_condition(data_received)
                 conn.sendall(response.encode())
+
 
 if __name__ == "__main__":
     ServerStart()

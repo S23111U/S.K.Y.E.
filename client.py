@@ -2,14 +2,14 @@ import socket
 import pyttsx3
 import speech_recognition as sr
 
-HOST = '127.0.0.1'
+HOST = "127.0.0.1"
 PORT = 12345
 
 
 def command():
     r = sr.Recognizer()
     with sr.Microphone() as source:
-        r.adjust_for_ambient_noise(source, duration=1)
+        r.adjust_for_ambient_noise(source, duration=2)
         audio = r.listen(source)
         try:
             speechinput = r.recognize_google(audio, language="en-in")
@@ -19,9 +19,10 @@ def command():
             print(e)
             return "Couldn't Understand Sir. Can you repeat again?"
 
+
 def receive_all(sock):
-    buffer = b''
-    delimiter = b'...'
+    buffer = b""
+    delimiter = b"..."
     while True:
         chunk = sock.recv(4096)
         if not chunk:
@@ -29,10 +30,14 @@ def receive_all(sock):
         buffer += chunk
         if delimiter in buffer:
             break
-    return buffer
+    return buffer.rstrip(delimiter)
+
 
 def say(text):
-    pyttsx3.speak(text)
+    engine = pyttsx3.init()
+    engine.say(text)
+    engine.runAndWait()
+
 
 if __name__ == "__main__":
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as client_socket:
