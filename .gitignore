@@ -1,0 +1,6 @@
+.env
+adapters_SKYE
+adapters_SKYE_V2
+.venv
+logs
+custom-models/SKYE
