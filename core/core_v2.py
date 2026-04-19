@@ -175,6 +175,9 @@ def personality_saturated(text: str) -> bool:
 
 def sanitise_raw(text: str) -> str:
     """Aggressive pre-guardrail cleanup to strip UI artifacts."""
+    text = re.sub(r"<draft>.*?</draft>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<critique>.*?</critique>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<final_answer>|</final_answer>", "", text)
     text = re.sub(r"<\|end\|>|<\|assistant\|>|<unk>|<s>|</s>", "", text)
     text = CALL_FUNC_RE.sub("", text)
     text = JSON_TAIL_RE.sub("", text)
@@ -248,8 +251,8 @@ def save_telemetry(user_input, final_output, guardrails, call_func_used, tool_na
 # =========================================================
 print("Loading SKYE with adapters...")
 model, tokenizer = load(
-    "mlx-community/Phi-3-mini-4k-instruct-4bit",
-    adapter_path=os.path.join(ROOT, "adapters_SKYE_V3"),
+    "mlx-community/Meta-Llama-3-8B-Instruct-4bit",
+    adapter_path=os.path.join(ROOT, "SKYE"),
 )
 print("✓ SKYE ONLINE\n")
 
@@ -393,7 +396,7 @@ def get_skye_response(user_input: str) -> str:
         prompt=prompt,
         max_tokens=400,
         verbose=False,
-    )
+    ).split("<|eot_id|>")[0].strip()
     
     # Tool Extraction
     tool_name, tool_args, pure_narration = extract_function_call(raw_response)
