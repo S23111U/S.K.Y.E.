@@ -1,6 +1,8 @@
 .env
 adapters_SKYE
 adapters_SKYE_V2
+adapters_SKYE_V3
 .venv
 logs
 custom-models/SKYE
+.vscode
