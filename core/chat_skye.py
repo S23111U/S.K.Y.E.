@@ -158,10 +158,15 @@ def personality_saturated(text: str) -> bool:
 def sanitise_raw(text: str) -> str:
     """
     Remove clear model artifacts before any guardrail evaluation:
+      - Internal logic tags
       - Special tokens
       - CALL_FUNC bleed
       - Role-leak repetition patterns (': Certainly. : Right away. ...')
     """
+    text = re.sub(r"<draft>.*?</draft>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<critique>.*?</critique>", "", text, flags=re.DOTALL)
+    text = re.sub(r"<final_answer>|</final_answer>", "", text)
+    
     # 1. Strip special tokens
     text = re.sub(r"<\|end\|>|<\|assistant\|>|<unk>|<s>|</s>", "", text)
 
@@ -241,8 +246,8 @@ def response_stats(text: str) -> dict:
 # =========================================================
 print("Loading SKYE with adapters...")
 model, tokenizer = load(
-    "mlx-community/Phi-3-mini-4k-instruct-4bit",
-    adapter_path="adapters_SKYE_V3",
+    "mlx-community/Meta-Llama-3-8B-Instruct-4bit",
+    adapter_path="SKYE",
 )
 print("✓ SKYE ONLINE\n")
 
@@ -280,7 +285,7 @@ def chat():
             prompt=prompt,
             max_tokens=400,
             verbose=False,
-        )
+        ).split("<|eot_id|>")[0].strip()
 
         # ---- SANITISE → GUARDRAILS → DISPLAY ----
         sanitised = sanitise_raw(raw_response)
