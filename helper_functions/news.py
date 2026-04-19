@@ -54,6 +54,32 @@ def latestnews(query):
         else:
             speak("Invalid choice")
 
+def fetch_news_summary(query):
+    API_KEY = 'pub_5670735eeb1d2e0dd7dd2a770cb429eb37f8f'
+    url = f'https://newsdata.io/api/1/latest?apikey={API_KEY}&q={query}'
+    
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            return f"Failed to retrieve news for {query}."
+        
+        news = response.json()
+        articles = news.get('results', [])
+        
+        if not articles:
+            return f"No news found for {query}."
+            
+        summary = f"Top {min(5, len(articles))} News Titles for '{query}':\n"
+        for i, article in enumerate(articles[:5]):
+            title = article.get('title', 'No Title')
+            description = article.get('description', '')
+            if description and len(description) > 100:
+                description = description[:100] + "..."
+            summary += f"{i+1}. {title} - {description}\n"
+        return summary
+    except Exception as e:
+        return f"Error fetching news: {e}"
+
 def callingfetchnews():
     while True:
         speak("For which topic do you want to listen to the news, sir?")
