@@ -19,6 +19,7 @@ from helper_functions.set_reminder import set_reminder
 from helper_functions.GenAI import GenAI_search
 from helper_functions.greet import Greetings
 from helper_functions.news import fetch_news_summary
+from core.memory_manager import MemoryManager
 
 # =========================================================
 # SYSTEM CONFIG & PATHS
@@ -44,6 +45,9 @@ SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
 TURN_INDEX = 0
 TELEMETRY_LOG = []
 TELEMETRY_FILE = os.path.join(LOG_DIR, f"telemetry_{SESSION_ID}.jsonl")
+MODEL_LOCK = threading.Lock()
+RELOAD_SIGNAL_FILE = os.path.join(ROOT, ".reload_model_signal")
+MEMORY = MemoryManager(ROOT)
 
 # =========================================================
 # GUARDRAIL CONFIG
@@ -173,8 +177,15 @@ def personality_saturated(text: str) -> bool:
     hits = sum(words.count(tok) for tok in STYLE_TOKENS)
     return hits / max(len(words), 1) > 0.08
 
+# =========================================================
+# [PILLAR 1: COGNITIVE REASONING - TEST-TIME COMPUTE]
+# =========================================================
 def sanitise_raw(text: str) -> str:
-    """Aggressive pre-guardrail cleanup to strip UI artifacts."""
+    """
+    Aggressive pre-guardrail cleanup.
+    We natively strip the <draft> and <critique> reasoning blocks (Pillar 1) 
+    so the user only sees the beautifully reasoned final outcome.
+    """
     text = re.sub(r"<draft>.*?</draft>", "", text, flags=re.DOTALL)
     text = re.sub(r"<critique>.*?</critique>", "", text, flags=re.DOTALL)
     text = re.sub(r"<final_answer>|</final_answer>", "", text)
@@ -195,7 +206,15 @@ def sanitise_raw(text: str) -> str:
     text = re.sub(r"([\s:;.}\]]+)$", "", text)
     return text.strip()
 
+# =========================================================
+# [PILLAR 2: DYNAMIC TONE PERCEPTION (FAIL-SAFES)]
+# =========================================================
 def apply_runtime_guardrails(text: str, history: list[str]):
+    """
+    These are the hard-coded Python limits. 
+    Ideally, DPO fine-tuning (Pillar 2) makes the model perfectly self-regulate length 
+    and tone, rendering these manual fail-safes obsolete!
+    """
     triggered = []
     
     if role_integrity_failed(text):
@@ -247,14 +266,39 @@ def save_telemetry(user_input, final_output, guardrails, call_func_used, tool_na
     TURN_INDEX += 1
 
 # =========================================================
-# LOAD MODEL
+# LOAD MODEL & HOT-SWAP DAEMON
 # =========================================================
 print("Loading SKYE with adapters...")
-model, tokenizer = load(
-    "mlx-community/Meta-Llama-3-8B-Instruct-4bit",
-    adapter_path=os.path.join(ROOT, "SKYE"),
-)
+with MODEL_LOCK:
+    model, tokenizer = load(
+        "mlx-community/Meta-Llama-3-8B-Instruct-4bit",
+        adapter_path=os.path.join(ROOT, "SKYE"),
+    )
 print("✓ SKYE ONLINE\n")
+
+def reload_watcher():
+    """Background thread that listens for .reload_model_signal and hot-swaps weights."""
+    global model, tokenizer
+    while True:
+        if os.path.exists(RELOAD_SIGNAL_FILE):
+            print("\n[MLOps]: Detected update signal. Hot-swapping brain matrix...")
+            try:
+                with MODEL_LOCK:
+                    # Force reload from the exact same paths
+                    new_model, new_tokenizer = load(
+                        "mlx-community/Meta-Llama-3-8B-Instruct-4bit",
+                        adapter_path=os.path.join(ROOT, "SKYE"),
+                    )
+                    model = new_model
+                    tokenizer = new_tokenizer
+                os.remove(RELOAD_SIGNAL_FILE)
+                print("[MLOps]: Hot-swap successful. New parameters loaded.\n")
+            except Exception as e:
+                print(f"[MLOps Error]: Failed to hot-swap: {e}")
+        import time
+        time.sleep(10)
+
+threading.Thread(target=reload_watcher, daemon=True).start()
 
 # =========================================================
 # TOOL REGISTRY (From core_v2.py)
@@ -364,6 +408,7 @@ def call_function_safe(name, args):
 # =========================================================
 # CORE NLP MASTER LOGIC
 # =========================================================
+# [PILLAR 3: LONG-TERM HYBRID MEMORY & RAG] (Scaffolding ready here)
 # Shared chat history across an active session (for CLI or single-user Socket)
 SHARED_MESSAGES = []
 LAST_TOOL_RESULT = ""
@@ -385,18 +430,41 @@ def get_skye_response(user_input: str) -> str:
     else:
         augmented_input = user_input
 
+    # [PILLAR 3: HYBRID RAG - PERSISTENT PROFILE & SEMANTIC MEMORIES]
+    profile = MEMORY.get_persistent_profile()
+    memories = MEMORY.search(user_input, top_k=3)
+    
+    system_text = "You are S.K.Y.E., an advanced AI assistant."
+    if profile:
+        profile_str = json.dumps(profile, ensure_ascii=False)
+        system_text += f"\n[User Profile Data]: {profile_str}"
+    
+    if memories:
+        memories_str = "\n".join([f"- {m}" for m in memories])
+        system_text += f"\n[Relevant Past Memories]:\n{memories_str}"
+
+    # Ensure a fresh system message is at the top or update existing
+    if not SHARED_MESSAGES or SHARED_MESSAGES[0]["role"] != "system":
+        SHARED_MESSAGES.insert(0, {"role": "system", "content": system_text})
+    else:
+        SHARED_MESSAGES[0]["content"] = system_text
+
     SHARED_MESSAGES.append({"role": "user", "content": augmented_input})
-    prompt = tokenizer.apply_chat_template(SHARED_MESSAGES, tokenize=False, add_generation_prompt=True)
+    
+    with MODEL_LOCK:
+        prompt = tokenizer.apply_chat_template(SHARED_MESSAGES, tokenize=False, add_generation_prompt=True)
+    
     assistant_history = [m["content"] for m in SHARED_MESSAGES if m["role"] == "assistant"]
     
     # Generate
-    raw_response = generate(
-        model,
-        tokenizer,
-        prompt=prompt,
-        max_tokens=400,
-        verbose=False,
-    ).split("<|eot_id|>")[0].strip()
+    with MODEL_LOCK:
+        raw_response = generate(
+            model,
+            tokenizer,
+            prompt=prompt,
+            max_tokens=400,
+            verbose=False,
+        ).split("<|eot_id|>")[0].strip()
     
     # Tool Extraction
     tool_name, tool_args, pure_narration = extract_function_call(raw_response)

@@ -48,9 +48,11 @@ def upgrade_to_draft_format(record: dict) -> dict:
         ]
     }
 
-# ---------------------------------------------------------------------------
-# PRISTINE EDGE CASES (Manually Authored)
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# [PILLAR 1: COGNITIVE REASONING] PRISTINE EDGE CASES (Manually Authored)
+# ===========================================================================
+# These examples manually hardcode the exact draft/critique framework.
+# They explicitly teach the model how to catch unsafe logic during "test-time compute".
 PRISTINE_TRACES = [
     {
         "messages": [
