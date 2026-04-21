@@ -8,7 +8,9 @@ from mlx_lm import load, generate
 LOGS_DIR = "logs"
 PROCESSED_DIR = "logs/processed_logs"
 PROPOSED_FACTS_FILE = "proposed_facts.jsonl"
-MODEL_PATH = "mlx-community/Phi-3-mini-4k-instruct-4bit"
+MODEL_PATH = "mlx-community/Meta-Llama-3-8B-Instruct-4bit"
+ADAPTER_PATH = "SKYE"
+PERSISTENT_PROFILE = "memory/persistent_profile.json"
 
 # --- MODEL PROMPT ---
 SYSTEM_PROMPT = """You are a silent, efficient log-analysis system.
@@ -38,9 +40,9 @@ def main():
     logging.info("--- Starting S.K.Y.E. Fact Proposal Analyzer ---")
 
     # Loading the model
-    logging.info("Loading model...")
-    model, tokenizer = load(MODEL_PATH)
-    logging.info(f"Model loaded successfully - {MODEL_PATH}")
+    logging.info("Loading model with adapters...")
+    model, tokenizer = load(MODEL_PATH, adapter_path=ADAPTER_PATH)
+    logging.info(f"Model loaded successfully - {MODEL_PATH} (ADAPTER: {ADAPTER_PATH})")
 
     # Searching for the logs folder
     if not os.path.exists(LOGS_DIR):
@@ -107,18 +109,38 @@ def main():
 
                 if proposals:
                     try:
-                        with open(PROPOSED_FACTS_FILE, "a") as f:
-                            for proposal in proposals:
-                                json.dump(proposal, f)
-                                f.write("\n")
-                            logging.info(
-                                f"Successfully saved {len(proposals)} new proposals."
-                            )
+                        # Load existing profile or start fresh
+                        profile = {}
+                        if os.path.exists(PERSISTENT_PROFILE):
+                            with open(PERSISTENT_PROFILE, "r") as pf:
+                                profile = json.load(pf)
+                        
+                        # Merge proposals into profile
+                        for proposal in proposals:
+                            action = proposal.get("action")
+                            path = proposal.get("path", "")
+                            value = proposal.get("value")
+                            
+                            # Simple path handling: "user.name" -> profile["user"]["name"]
+                            keys = path.split(".")
+                            d = profile
+                            for k in keys[:-1]:
+                                d = d.setdefault(k, {})
+                            
+                            if action in ["SET", "UPDATE", "ADD"]:
+                                # If ADD to a list
+                                if action == "ADD" and isinstance(d.get(keys[-1]), list):
+                                    d[keys[-1]].append(value)
+                                else:
+                                    d[keys[-1]] = value
+                        
+                        with open(PERSISTENT_PROFILE, "w") as pf:
+                            json.dump(profile, pf, indent=4)
+                        
+                        logging.info(f"Successfully updated persistent profile with {len(proposals)} new findings.")
 
                     except Exception as e:
-                        logging.warning(
-                            f"Error writing to file - {PROPOSED_FACTS_FILE}, error: {e}"
-                        )
+                        logging.warning(f"Error updating profile - {PERSISTENT_PROFILE}, error: {e}")
 
                 base_name = os.path.basename(filename)
                 os.rename(filename, os.path.join(PROCESSED_DIR, base_name))
