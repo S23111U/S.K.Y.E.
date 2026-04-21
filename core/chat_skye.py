@@ -155,13 +155,13 @@ def personality_saturated(text: str) -> bool:
 # =========================================================
 # PRE-GUARDRAIL SANITISATION
 # =========================================================
+# =========================================================
+# [PILLAR 1: COGNITIVE REASONING - TEST-TIME COMPUTE]
+# =========================================================
 def sanitise_raw(text: str) -> str:
     """
-    Remove clear model artifacts before any guardrail evaluation:
-      - Internal logic tags
-      - Special tokens
-      - CALL_FUNC bleed
-      - Role-leak repetition patterns (': Certainly. : Right away. ...')
+    Remove clear model artifacts before any guardrail evaluation.
+    Strips the <draft> testing-compute so the user only sees the final answer.
     """
     text = re.sub(r"<draft>.*?</draft>", "", text, flags=re.DOTALL)
     text = re.sub(r"<critique>.*?</critique>", "", text, flags=re.DOTALL)
@@ -196,7 +196,11 @@ def sanitise_raw(text: str) -> str:
 # =========================================================
 # RUNTIME GUARDRAILS
 # =========================================================
+# =========================================================
+# [PILLAR 2: DYNAMIC TONE PERCEPTION (FAIL-SAFES)]
+# =========================================================
 def apply_runtime_guardrails(text: str, history: list[str]):
+    """Hard-coded Python limits (used until DPO fine-tuning naturally solves this)."""
     triggered = []
 
     if role_integrity_failed(text):
