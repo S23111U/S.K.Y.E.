@@ -57,7 +57,7 @@ def main():
         logging.info(f"Created directory - {PROCESSED_DIR}")
 
     # Searching for the files in logs folder
-    log_files = glob.glob(os.path.join(LOGS_DIR, "skye_*.json"))
+    log_files = glob.glob(os.path.join(LOGS_DIR, "telemetry_*.jsonl"))
     if not log_files:
         logging.info("No new log files found")
         return
@@ -68,19 +68,26 @@ def main():
         logging.info(f"Analyzing {filename}...")
         try:
             with open(filename, "r") as f:
-                conversation_data = json.load(f)
+                conversation_data = []
+                for line in f:
+                    try:
+                        conversation_data.append(json.loads(line))
+                    except:
+                        pass
 
                 log_text = ""
                 for item in conversation_data:
-                    log_text += (
-                        f"{item.get('role', 'unknown')}: {item.get('content', '')}\n"
-                    )
+                    user_input = item.get("user_input", "")
+                    assistant_output = item.get("assistant_output", "")
+                    # Strip XML for clean extraction
+                    clean_output = assistant_output.split("</critique>")[-1].replace("<final_answer>", "").replace("</final_answer>", "").strip()
+                    log_text += f"User: {user_input}\nAssistant: {clean_output}\n"
 
-                if not log_text:
-                    logging.warning(f"Log file {filename} is empty. Skipping.")
+                if not log_text.strip():
+                    logging.warning(f"Log file {filename} is empty or unparsable. Skipping.")
                     continue
 
-                final_prompt = f"""<|system|>{SYSTEM_PROMPT}<|end|><|user|>Conversation:{log_text}<|end|><|assistant|>"""
+                final_prompt = f"<|start_header_id|>system<|end_header_id|>\n\n{SYSTEM_PROMPT}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\nConversation:\n{log_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
 
                 raw_response = generate(
                     model, tokenizer, final_prompt, temp=0.0, max_tokens=500
