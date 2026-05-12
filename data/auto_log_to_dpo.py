@@ -9,9 +9,9 @@ import re
 # This script scans telemetry logs for guardrail triggers and
 # synthesizes DPO triplets to teach the model to avoid those mistakes.
 
-TELEMETRY_LOGS = "logs/telemetry_*.jsonl"
-DPO_TRAIN_FILE = "prepared_data_mlx/dpo/train.jsonl"
-DPO_VALID_FILE = "prepared_data_mlx/dpo/valid.jsonl"
+TELEMETRY_LOGS = ["logs/telemetry_*.jsonl", "logs/processed_logs/telemetry_*.jsonl"]
+DPO_TRAIN_FILE = "prepared_data_mlx/train.jsonl"
+DPO_VALID_FILE = "prepared_data_mlx/valid.jsonl"
 
 def clean_xml(text):
     """Basic cleanup for comparison/synthesis."""
@@ -37,7 +37,10 @@ def synthesize_chosen(prompt, rejected, triggers):
     return f"<draft>Analyzing request.</draft><critique>Ensuring I follow butler-persona and safety rules.</critique><final_answer>{rejected}</final_answer>"
 
 def convert_logs_to_dpo():
-    log_files = glob.glob(TELEMETRY_LOGS)
+    log_files = []
+    for pattern in TELEMETRY_LOGS:
+        log_files.extend(glob.glob(pattern))
+        
     new_triplets = []
     
     for log_file in log_files:
@@ -53,13 +56,12 @@ def convert_logs_to_dpo():
                         rejected = data.get("assistant_output", "")
                         chosen = synthesize_chosen(prompt, rejected, triggers)
                         
-                        # Apply Llama 3 Template
-                        prompt_tmpl = f"<|start_header_id|>user<|end_header_id|>\n\n{prompt}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-                        
+                        # Format for mlx_lm chat dataset
                         new_triplets.append({
-                            "prompt": prompt_tmpl,
-                            "chosen": f"{chosen}<|eot_id|>",
-                            "rejected": f"{rejected}<|eot_id|>"
+                            "messages": [
+                                {"role": "user", "content": prompt},
+                                {"role": "assistant", "content": chosen}
+                            ]
                         })
                 except:
                     continue
@@ -70,18 +72,15 @@ def convert_logs_to_dpo():
 
     print(f"Synthesized {len(new_triplets)} DPO correction pairs from logs.")
     
-    # Merge with existing training data if any
-    existing_data = []
-    if os.path.exists(DPO_TRAIN_FILE):
-        with open(DPO_TRAIN_FILE, "r") as f:
-            existing_data = [json.loads(l) for l in f]
-            
-    combined = existing_data + new_triplets
-    
-    # Write back
+    # Write back to train and valid
+    # Write back to train and valid
     os.makedirs(os.path.dirname(DPO_TRAIN_FILE), exist_ok=True)
     with open(DPO_TRAIN_FILE, "w") as f:
-        for r in combined:
+        for r in new_triplets:
+            f.write(json.dumps(r) + "\n")
+            
+    with open(DPO_VALID_FILE, "w") as f:
+        for r in new_triplets:
             f.write(json.dumps(r) + "\n")
 
 if __name__ == "__main__":

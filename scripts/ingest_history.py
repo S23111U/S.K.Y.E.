@@ -7,7 +7,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
 
-from core.memory_manager import MemoryManager
+from core.core_v2 import MemoryManager
 
 # =========================================================
 # [PILLAR 3: SEMANTIC INGESTOR]
@@ -17,7 +17,7 @@ def ingest_all_logs():
     print("[MLOps]: Starting historical log ingestion for Tier 2 semantics...")
     
     memory = MemoryManager(ROOT)
-    log_files = glob.glob(os.path.join(ROOT, "logs", "*.jsonl"))
+    log_files = glob.glob(os.path.join(ROOT, "logs", "*.jsonl")) + glob.glob(os.path.join(ROOT, "logs", "processed_logs", "*.jsonl"))
     
     if not log_files:
         print("[MLOps]: No logs found to ingest.")
