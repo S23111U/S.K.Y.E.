@@ -34,16 +34,17 @@ def main():
     # This generates DPO pairs from guardrail failures in daily logs
     run_command([sys.executable, "data/auto_log_to_dpo.py"], "Pillar 1/2: Auto Dataset Generation")
     
-    # 4. TRAINING PHASE: MLX DPO Fine-Tuning
-    # We trigger the DPO training loop. 
-    # NOTE: We keep it lightweight using DPO mode for tone/correction.
+    # 4. TRAINING PHASE: MLX SFT Fine-Tuning
+    # We trigger the standard LoRA training loop on the corrected 'chosen' behaviors.
     train_cmd = [
-        "mlx_lm.lora",
+        sys.executable, "-m", "mlx_lm.lora",
         "--model", "mlx-community/Meta-Llama-3-8B-Instruct-4bit",
         "--train",
-        "--train-mode", "dpo",
-        "--data", "prepared_data_mlx/dpo",
-        "--iters", "200",  # Shorter nightly burst to prevent overfitting
+        "--data", "prepared_data_mlx",
+        "--iters", "100",  # Shorter nightly burst to prevent overfitting
+        "--batch-size", "1",
+        "--max-seq-length", "512",
+        "--grad-checkpoint",
         "--adapter-path", "SKYE"
     ]
     run_command(train_cmd, "Neural Matrix Training (DPO)")
