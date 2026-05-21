@@ -41,11 +41,13 @@ def main():
         "--model", "mlx-community/Meta-Llama-3-8B-Instruct-4bit",
         "--train",
         "--data", "prepared_data_mlx",
-        "--iters", "100",  # Shorter nightly burst to prevent overfitting
+        "--iters", "40",  # Lowered to a small burst so it gently builds on existing knowledge
         "--batch-size", "1",
         "--max-seq-length", "512",
+        "--mask-prompt",
         "--grad-checkpoint",
-        "--adapter-path", "SKYE"
+        "--adapter-path", "SKYE",
+        "--resume-adapter-file", "SKYE/adapters.safetensors"  # CRITICAL: Forces MLX to load and build on existing weights
     ]
     run_command(train_cmd, "Neural Matrix Training (DPO)")
     

@@ -3,4 +3,10 @@
 logs
 .vscode
 SKYE
-prepared_data_mlx
+augment_dataset.py
+dataset.jsonl
+dataset_v2.jsonl
+dataset_v3.jsonl
+long_form_extra.py
+long_form_extra2.py
+long_form_extra3.py
