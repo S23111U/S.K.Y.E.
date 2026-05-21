@@ -91,34 +91,26 @@ def create_dpo_triplets():
     final_dataset = triplets * 10
     random.shuffle(final_dataset)
 
-    # Format for Llama 3 Chat Template natively
-    mlx_dpo_data = []
+# Format for clean conversational training
+    mlx_sft_data = []
     for item in final_dataset:
-        # MLX DPO natively supports huggingface conversational arrays!
-        # We supply it as prompt, chosen, rejected strings, BUT we must apply the system template!
-        prompt_str = f"<|start_header_id|>user<|end_header_id|>\n\n{item['prompt']}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-        
-        # We append eot_id to chosen/rejected so the model optimally learns to stop!
-        chosen_str = f"{item['chosen']}<|eot_id|>"
-        rejected_str = f"{item['rejected']}<|eot_id|>"
-        
-        mlx_dpo_data.append({
-            "prompt": prompt_str,
-            "chosen": chosen_str,
-            "rejected": rejected_str
+        mlx_sft_data.append({
+            "messages": [
+                {"role": "user", "content": item['prompt']},
+                {"role": "assistant", "content": item['chosen']}
+            ]
         })
 
-    os.makedirs("prepared_data_mlx/dpo", exist_ok=True)
-    with open("prepared_data_mlx/dpo/train.jsonl", "w", encoding="utf-8") as f:
-        for rec in mlx_dpo_data:
+    os.makedirs("prepared_data_mlx", exist_ok=True)
+    with open("prepared_data_mlx/train.jsonl", "w", encoding="utf-8") as f:
+        for rec in mlx_sft_data:
             f.write(json.dumps(rec) + "\n")
             
-    # Use 10% for validation
-    with open("prepared_data_mlx/dpo/valid.jsonl", "w", encoding="utf-8") as f:
-        for rec in mlx_dpo_data[:10]:
+    with open("prepared_data_mlx/valid.jsonl", "w", encoding="utf-8") as f:
+        for rec in mlx_sft_data[:10]:
             f.write(json.dumps(rec) + "\n")
 
-    print(f"✓ DPO Dataset Generated: {len(mlx_dpo_data)} pairs targeting Dynamic Length and Tone.")
+    print(f"✓ Training Dataset Generated: {len(mlx_sft_data)} targeted conversation traces matching proper tone.")
 
 if __name__ == "__main__":
     create_dpo_triplets()

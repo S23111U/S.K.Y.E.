@@ -6,6 +6,9 @@ import socket
 import threading
 import webbrowser
 import wikipedia
+import asyncio
+import sqlite3
+import numpy as np
 from datetime import datetime
 from mlx_lm import load, generate
 
@@ -20,8 +23,7 @@ from helper_functions.GenAI import GenAI_search
 from helper_functions.greet import Greetings
 from helper_functions.news import fetch_news_summary
 from helper_functions.news import fetch_news_summary
-import sqlite3
-import numpy as np
+from clients.browser import start_http_server, open_browser, start_ws_server
 from sentence_transformers import SentenceTransformer
 
 # =========================================================
@@ -635,6 +637,17 @@ def handle_client(conn):
                 break
 
 def start_server_mode():
+    try:
+        print("[Bridge Integration]: Booting UI Servers concurrently...")
+        threading.Thread(target=start_http_server, daemon=True).start()
+        threading.Thread(target=open_browser, daemon=True).start()
+        
+        def run_async_ws():
+            asyncio.run(start_ws_server())
+        threading.Thread(target=run_async_ws, daemon=True).start()
+    except Exception as bridge_err:
+        print(f"[Bridge Error]: Could not automatically open browser UI: {bridge_err}")
+
     with socket.socket() as server_socket:
         server_socket.bind((HOST, PORT))
         server_socket.listen()
