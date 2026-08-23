@@ -10,3 +10,13 @@ dataset_v3.jsonl
 long_form_extra.py
 long_form_extra2.py
 long_form_extra3.py
+
+# OS / editor cruft
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Local one-off backup made by scripts/clean_memory.py
+memory/semantics.db.backup
