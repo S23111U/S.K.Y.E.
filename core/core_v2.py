@@ -53,7 +53,7 @@ MODEL_LOCK = threading.Lock()
 
 
 # =========================================================
-# [PILLAR 3: HYBRID RAG MEMORY MANAGER]
+# LONG-TERM MEMORY
 # =========================================================
 from memory.manager import MemoryManager
 
@@ -202,17 +202,17 @@ def personality_saturated(text: str) -> bool:
 
 
 # =========================================================
-# [PILLAR 1: COGNITIVE REASONING - TEST-TIME COMPUTE]
+# RAW OUTPUT SANITISATION
 # =========================================================
 def sanitise_raw(text: str) -> str:
     """
-    Aggressive pre-guardrail cleanup.
-    We natively strip the <draft> and <critique> reasoning blocks (Pillar 1)
-    so the user only sees the beautifully reasoned final outcome.
+    Aggressive pre-guardrail cleanup of raw model output.
+
+    The <draft>/<critique>/<final_answer> strippers that used to head this
+    function were removed with the adapter that produced those tags. Archived
+    logs still contain them, so ingest_history.py and proposed_facts.py keep
+    their own handling.
     """
-    text = re.sub(r"<draft>.*?</draft>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<critique>.*?</critique>", "", text, flags=re.DOTALL)
-    text = re.sub(r"<final_answer>|</final_answer>", "", text)
     text = re.sub(r"<\|end\|>|<\|assistant\|>|<unk>|<s>|</s>", "", text)
     text = CALL_FUNC_RE.sub("", text)
     text = JSON_TAIL_RE.sub("", text)
@@ -232,7 +232,7 @@ def sanitise_raw(text: str) -> str:
 
 
 # =========================================================
-# [PILLAR 2: DYNAMIC TONE PERCEPTION (FAIL-SAFES)]
+# RUNTIME GUARDRAILS
 # =========================================================
 def apply_runtime_guardrails(text: str, history: list[str]):
     """
@@ -437,7 +437,7 @@ def call_function_safe(name, args):
 # =========================================================
 # CORE NLP MASTER LOGIC
 # =========================================================
-# [PILLAR 3: LONG-TERM HYBRID MEMORY & RAG]
+# CONVERSATION STATE
 # Shared chat history across an active session (for CLI or single-user Socket)
 SHARED_MESSAGES = []
 LAST_TOOL_RESULT = ""
@@ -463,7 +463,7 @@ def get_skye_response(user_input: str) -> str:
     else:
         augmented_input = user_input
 
-    # [PILLAR 3: HYBRID RAG - PERSISTENT PROFILE & SEMANTIC MEMORIES]
+    # Retrieve the persistent profile and any relevant semantic memories
     profile = MEMORY.get_persistent_profile()
     memories = MEMORY.search(user_input, top_k=3)
     _t["memory"] = time.time()
