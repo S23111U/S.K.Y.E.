@@ -9,7 +9,7 @@ import webbrowser
 import wikipedia
 import asyncio
 from datetime import datetime
-from mlx_lm import load, generate
+from mlx_lm import load, stream_generate
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
@@ -22,6 +22,7 @@ from helper_functions.GenAI import GenAI_search
 from helper_functions.greet import Greetings
 from helper_functions.news import fetch_news_summary
 from clients.browser import start_http_server, open_browser, start_ws_server
+from core.protocol import frame
 
 # =========================================================
 # SYSTEM CONFIG & PATHS
@@ -435,8 +436,17 @@ SHARED_MESSAGES = []
 LAST_TOOL_RESULT = ""
 
 
-def get_skye_response(user_input: str) -> str:
-    """Master generation pipeline: rules, memory, generation, guardrails, tools."""
+def stream_skye_response(user_input: str):
+    """Yields protocol frames as the reply is generated.
+
+    Two phases. The first ~40 characters are buffered without being emitted,
+    because a reply that begins with CALL_FUNC is a tool call and must never be
+    typed at the user as raw JSON. Once the buffer proves it is ordinary prose,
+    it is flushed and every later chunk streams live.
+
+    Guardrails need the whole response, so they run once at the end. The `done`
+    frame carries that cleaned text; clients replace the streamed tokens with it.
+    """
     global SHARED_MESSAGES, LAST_TOOL_RESULT
 
     _t = {}
@@ -446,7 +456,8 @@ def get_skye_response(user_input: str) -> str:
     rule_reply = rule_based_response(user_input)
     if rule_reply:
         save_telemetry(user_input, rule_reply, ["rule_bypass"], False)
-        return rule_reply
+        yield frame("done", text=rule_reply)
+        return
 
     # Format user prompt, injecting past tool data if present
     if LAST_TOOL_RESULT:
@@ -490,15 +501,38 @@ def get_skye_response(user_input: str) -> str:
         m["content"] for m in SHARED_MESSAGES if m["role"] == "assistant"
     ]
 
+    yield frame("start")
+
     # Generate
     with MODEL_LOCK:
-        _raw_full = generate(
+        buffer, _raw_full, streaming, suppressed = "", "", False, False
+        for chunk in stream_generate(
             model,
             tokenizer,
             prompt=prompt,
             max_tokens=150,
-            verbose=False,
-        )
+        ):
+            piece = chunk.text
+            _raw_full += piece
+
+            if suppressed:
+                # Tool call: keep generating so the JSON completes and the tool
+                # can actually be dispatched, but emit nothing to the client.
+                continue
+
+            if not streaming:
+                buffer += piece
+                # Wait until we can tell a tool call from ordinary prose.
+                if len(buffer) < 40 and "CALL_FUNC" not in buffer:
+                    continue
+                if "CALL_FUNC" in buffer:
+                    suppressed = True          # tool call: never stream it
+                    continue
+                streaming = True
+                yield frame("token", text=buffer)
+            else:
+                yield frame("token", text=piece)
+
         raw_response = _raw_full.split("<|eot_id|>")[0].strip()
 
         _t["generate"] = time.time()
@@ -558,13 +592,27 @@ def get_skye_response(user_input: str) -> str:
     save_telemetry(
         user_input, final_output, guardrails, bool(tool_name), tool_name, tool_args
     )
+
+    if tool_name:
+        yield frame("tool", name=tool_name)
+
     print(
         f"[timing] memory {(_t['memory']-_t['start'])*1000:.0f}ms | "
         f"generate {(_t['generate']-_t['memory'])*1000:.0f}ms | "
         f"prompt_tokens ~{len(prompt)//4} | out_tokens ~{len(_raw_full)//4}"
     )
 
-    return final_output
+    yield frame("done", text=final_output)
+
+
+def get_skye_response(user_input: str) -> str:
+    """Thin wrapper over stream_skye_response for callers that want a string."""
+    final = ""
+    for f in stream_skye_response(user_input):
+        data = json.loads(f.decode())
+        if data["type"] == "done":
+            final = data["text"]
+    return final
 
 
 def rule_based_response(speech: str):
@@ -600,8 +648,20 @@ def start_cli_mode():
             if user_input.lower() in {"exit", "quit"}:
                 break
 
-            reply = get_skye_response(user_input)
-            print(f"\nSKYE: {reply}\n")
+            print("\nSKYE: ", end="", flush=True)
+            final = ""
+            for f in stream_skye_response(user_input):
+                data = json.loads(f.decode())
+                if data["type"] == "token":
+                    print(data["text"], end="", flush=True)
+                elif data["type"] == "tool":
+                    print(f"[{data['name']}]", end="", flush=True)
+                elif data["type"] == "done":
+                    final = data["text"]
+            print()
+            if final:
+                # Overwrite the streamed text with the guardrailed version.
+                print(f"\r\033[KSKYE: {final}\n")
         except KeyboardInterrupt:
             break
     print(f"\nTelemetry saved to logs/telemetry_{SESSION_ID}.jsonl\nSystems OFFLINE.")
@@ -615,11 +675,14 @@ def handle_client(conn):
                 break
             user_speech = data.decode().strip()
             print(f"[Client]: {user_speech}")
-            reply = get_skye_response(user_speech)
-            print(f"[Reply]: {reply}")
             try:
-                reply_clean = reply.strip().replace("...", "")
-                conn.sendall(reply_clean.encode() + b"...")
+                reply = ""
+                for f in stream_skye_response(user_speech):
+                    conn.sendall(f)
+                    payload = json.loads(f.decode())
+                    if payload["type"] == "done":
+                        reply = payload["text"]
+                print(f"[Reply]: {reply}")
             except Exception as e:
                 print(f"[Socket send error]: {e}")
                 break
