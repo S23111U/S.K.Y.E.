@@ -522,6 +522,8 @@ def get_skye_response(user_input: str) -> str:
     # Guardrails
     sanitised = sanitise_raw(text_to_clean)
     guarded, guardrails = apply_runtime_guardrails(sanitised, assistant_history)
+    if guardrails:
+        print(f"[guardrails fired: {guardrails}]")
     final_narration = guarded.strip()
 
     # Tool Execution
