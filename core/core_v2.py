@@ -53,8 +53,6 @@ TURN_INDEX = 0
 TELEMETRY_LOG = []
 TELEMETRY_FILE = os.path.join(LOG_DIR, f"telemetry_{SESSION_ID}.jsonl")
 MODEL_LOCK = threading.Lock()
-RELOAD_SIGNAL_FILE = os.path.join(ROOT, ".reload_model_signal")
-RELOAD_SIGNAL_FILE = os.path.join(ROOT, ".reload_model_signal")
 
 
 # =========================================================
@@ -297,7 +295,7 @@ def save_telemetry(
 
 
 # =========================================================
-# LOAD MODEL & HOT-SWAP DAEMON
+# LOAD MODEL
 # =========================================================
 print("Loading SKYE with adapters...")
 with MODEL_LOCK:
@@ -308,35 +306,6 @@ with MODEL_LOCK:
     }
 print("✓ SKYE ONLINE\n")
 
-
-def reload_watcher():
-    """Background thread that listens for .reload_model_signal and hot-swaps weights."""
-    global model, tokenizer
-    while True:
-        if os.path.exists(RELOAD_SIGNAL_FILE):
-            print("\n[MLOps]: Detected update signal. Hot-swapping brain matrix...")
-            try:
-                with MODEL_LOCK:
-                    # Force reload from the exact same paths
-                    new_model, new_tokenizer = load(
-                        "mlx-community/Meta-Llama-3-8B-Instruct-4bit"
-                    )
-                    tokenizer.eos_token_ids = {
-                        tokenizer.convert_tokens_to_ids("<|eot_id|>"),
-                        tokenizer.convert_tokens_to_ids("<|end_of_text|>"),
-                    }
-                    model = new_model
-                    tokenizer = new_tokenizer
-                os.remove(RELOAD_SIGNAL_FILE)
-                print("[MLOps]: Hot-swap successful. New parameters loaded.\n")
-            except Exception as e:
-                print(f"[MLOps Error]: Failed to hot-swap: {e}")
-        import time
-
-        time.sleep(10)
-
-
-threading.Thread(target=reload_watcher, daemon=True).start()
 
 # =========================================================
 # TOOL REGISTRY (From core_v2.py)
