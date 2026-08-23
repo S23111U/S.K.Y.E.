@@ -236,9 +236,10 @@ def sanitise_raw(text: str) -> str:
 # =========================================================
 def apply_runtime_guardrails(text: str, history: list[str]):
     """
-    These are the hard-coded Python limits.
-    Ideally, DPO fine-tuning (Pillar 2) makes the model perfectly self-regulate length
-    and tone, rendering these manual fail-safes obsolete!
+    Hard-coded Python fail-safes on length, tone and repetition.
+
+    Built to compensate for the fine-tune that has since been removed. Which of
+    these can still fire is under review; the caller logs every one that does.
     """
     triggered = []
 
@@ -297,7 +298,7 @@ def save_telemetry(
 # =========================================================
 # LOAD MODEL
 # =========================================================
-print("Loading SKYE with adapters...")
+print("Loading SKYE...")
 with MODEL_LOCK:
     model, tokenizer = load("mlx-community/Meta-Llama-3-8B-Instruct-4bit")
     tokenizer.eos_token_ids = {
@@ -308,7 +309,7 @@ print("✓ SKYE ONLINE\n")
 
 
 # =========================================================
-# TOOL REGISTRY (From core_v2.py)
+# TOOL REGISTRY
 # =========================================================
 TOOLS = {}
 
@@ -436,7 +437,7 @@ def call_function_safe(name, args):
 # =========================================================
 # CORE NLP MASTER LOGIC
 # =========================================================
-# [PILLAR 3: LONG-TERM HYBRID MEMORY & RAG] (Scaffolding ready here)
+# [PILLAR 3: LONG-TERM HYBRID MEMORY & RAG]
 # Shared chat history across an active session (for CLI or single-user Socket)
 SHARED_MESSAGES = []
 LAST_TOOL_RESULT = ""
