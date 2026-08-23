@@ -4,11 +4,10 @@ import re
 import json
 import socket
 import threading
+import time
 import webbrowser
 import wikipedia
 import asyncio
-import sqlite3
-import numpy as np
 from datetime import datetime
 from mlx_lm import load, generate
 
@@ -22,9 +21,7 @@ from helper_functions.set_reminder import set_reminder
 from helper_functions.GenAI import GenAI_search
 from helper_functions.greet import Greetings
 from helper_functions.news import fetch_news_summary
-from helper_functions.news import fetch_news_summary
 from clients.browser import start_http_server, open_browser, start_ws_server
-from sentence_transformers import SentenceTransformer
 
 # =========================================================
 # SYSTEM CONFIG & PATHS
@@ -440,8 +437,6 @@ def call_function_safe(name, args):
 # Shared chat history across an active session (for CLI or single-user Socket)
 SHARED_MESSAGES = []
 LAST_TOOL_RESULT = ""
-
-import time
 
 
 def get_skye_response(user_input: str) -> str:
