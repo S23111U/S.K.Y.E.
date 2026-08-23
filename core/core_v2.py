@@ -227,7 +227,7 @@ def sanitise_raw(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r",\s*,", ",", text)
     text = re.sub(r"\s*,\s*", ", ", text)
-    text = re.sub(r"([\s:;.}\]]+)$", "", text)
+    text = re.sub(r"([\s:;}\]]+)$", "", text)
     return text.strip()
 
 
