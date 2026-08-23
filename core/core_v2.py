@@ -445,7 +445,7 @@ import time
 
 
 def get_skye_response(user_input: str) -> str:
-    """Master generation pipeline merging chat_skye cleaning with core_v2 execution."""
+    """Master generation pipeline: rules, memory, generation, guardrails, tools."""
     global SHARED_MESSAGES, LAST_TOOL_RESULT
 
     _t = {}

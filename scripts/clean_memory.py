@@ -1,7 +1,7 @@
 """
 One-time cleanup for memory/semantics.db.
 
-Run from the repo root:  python clean_memory.py
+Run from the repo root:  python scripts/clean_memory.py
 
 Three things happen:
   1. Duplicate rows are removed (keeping the earliest copy of each).
