@@ -155,7 +155,10 @@ def strip_status_filler(text: str) -> str:
             flags=re.IGNORECASE,
         )
     text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"^[\s.,;]+|[\s.,;]+$", "", text)
+    # NB: '.' is deliberately absent from the *trailing* class. It is still
+    # stripped from the front. Leaving it here removed the full stop from the
+    # end of every reply.
+    text = re.sub(r"^[\s.,;]+|[\s,;]+$", "", text)
     return text.strip()
 
 
