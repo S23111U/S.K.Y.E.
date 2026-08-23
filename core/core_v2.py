@@ -95,11 +95,6 @@ CALL_FUNC_RE = re.compile(
 # Catch dangling JSON tail fragments
 JSON_TAIL_RE = re.compile(r"(\s*[{}]\s*:\s*[{}]\s*){1,}", re.IGNORECASE)
 
-# Role-play / dialog leak patterns: ': Certainly. : Right away. :'
-ROLE_LEAK_CHAIN_RE = re.compile(
-    r"(\s*:\s+[A-Za-z ,.'!?-]{1,60}[.!?]){1,}",
-)
-
 # Standalone status/filler phrases that should always be stripped
 ALWAYS_STRIP_PHRASES = [
     r"operation completed",
@@ -208,21 +203,18 @@ def sanitise_raw(text: str) -> str:
     """
     Aggressive pre-guardrail cleanup of raw model output.
 
-    The <draft>/<critique>/<final_answer> strippers that used to head this
-    function were removed with the adapter that produced those tags. Archived
-    logs still contain them, so ingest_history.py and proposed_facts.py keep
-    their own handling.
+    Everything removed here was an artefact of the fine-tuned adapter, which is
+    gone. The <draft>/<critique>/<final_answer> strippers went with it; archived
+    logs still contain those tags, so ingest_history.py and proposed_facts.py
+    keep their own handling. The role-leak chain and trailing-stub strippers
+    went too: the persona now handles tone, and both regexes damaged ordinary
+    prose ("The reason: it works." lost its clause, and a persona-sanctioned
+    trailing "Sir" was cut down to a dangling comma).
     """
     text = re.sub(r"<\|end\|>|<\|assistant\|>|<unk>|<s>|</s>", "", text)
     text = CALL_FUNC_RE.sub("", text)
     text = JSON_TAIL_RE.sub("", text)
-    text = ROLE_LEAK_CHAIN_RE.sub("", text)
     text = strip_status_filler(text)
-
-    # Strip conversational stubs appended to real sentences (e.g., "...data. . Understood, Sir. . Of course")
-    trailing_words = r"(?:Understood|Of course|Certainly|Acknowledged|Right away|Affirmative|Consider it handled|Sir(?:\.)?)"
-    pattern = rf"\b(?:{trailing_words})(?:[\s.,?!]|{trailing_words})*$"
-    text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
 
     text = re.sub(r"\s+", " ", text).strip()
     text = re.sub(r",\s*,", ",", text)
