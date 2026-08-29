@@ -48,7 +48,6 @@ SAFETY_BLOCKLIST = {
 # =========================================================
 SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
 TURN_INDEX = 0
-TELEMETRY_LOG = []
 TELEMETRY_FILE = os.path.join(LOG_DIR, f"telemetry_{SESSION_ID}.jsonl")
 MODEL_LOCK = threading.Lock()
 
@@ -282,7 +281,6 @@ def save_telemetry(
         },
         "timestamp": datetime.now().isoformat(),
     }
-    TELEMETRY_LOG.append(event)
     with open(TELEMETRY_FILE, "a") as f:
         f.write(json.dumps(event) + "\n")
     TURN_INDEX += 1

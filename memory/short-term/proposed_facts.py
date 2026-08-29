@@ -7,7 +7,6 @@ from mlx_lm import load, generate
 # --- CONFIGS ---
 LOGS_DIR = "logs"
 PROCESSED_DIR = "logs/processed_logs"
-PROPOSED_FACTS_FILE = "proposed_facts.jsonl"
 MODEL_PATH = "mlx-community/Meta-Llama-3-8B-Instruct-4bit"
 PERSISTENT_PROFILE = "memory/persistent_profile.json"
 
