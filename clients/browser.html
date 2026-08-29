@@ -445,21 +445,46 @@
     sendBtn.disabled=true;
   }
 
-  // ── VOICE: wake word in, speech out ────────────────────────────────────
+  // ── VOICE: speech in, speech out ───────────────────────────────────────
   // Speech synthesis is on-device. Speech RECOGNITION is not: the browser
-  // streams microphone audio to Apple/Google. That is the same trade the old
-  // clients/client.py made with recognize_google().
+  // streams microphone audio to Apple/Google. Same trade clients/client.py
+  // already made with recognize_google().
   //
-  // The wake word is matched only at the START of an utterance, so ordinary
-  // speech containing "sky" (e.g. "why is the sky blue") cannot trigger it.
+  // The wake word is OPTIONAL: anything you say becomes a query, and saying
+  // "Skye" first simply strips it. Background speech is therefore also sent,
+  // so "stop listening" exists as a spoken off switch.
   const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski)\b[\s,.!?-]*/i;
-  let recog=null,recogWanted=false,armed=false,speaking=false;
+  const CANCEL=/^\s*(?:scratch that|never ?mind|forget it|ignore that|cancel(?: that)?)\s*[.!?]*\s*$/i;
+  const STOP=/^\s*(?:(?:skye|sky)[\s,]*)?(?:stop listening|stop the mic|go to sleep|mute yourself)\s*[.!?]*\s*$/i;
+  const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
+  const COMMIT_MS=1400;   // silence after speech before it is sent
+
+  let recog=null,recogWanted=false,speaking=false;
+  let pending='',commitTimer=null,previewOn=false;
 
   function vstatus(t){ if(window.setSkyeText)window.setSkyeText(t); }
+
+  // ---- reply voice: prefer a US English female voice ----
+  const VOICE_PREFS=['Samantha','Ava','Allison','Susan','Zoe','Nicky','Google US English'];
+  let chosenVoice=null;
+  function pickVoice(){
+    if(!('speechSynthesis' in window))return;
+    const vs=speechSynthesis.getVoices();
+    if(!vs.length)return;                    // populated asynchronously
+    for(const name of VOICE_PREFS){
+      const v=vs.find(x=>x.name===name)||vs.find(x=>x.name.startsWith(name));
+      if(v){ chosenVoice=v; return; }
+    }
+    chosenVoice=vs.find(v=>/^en[-_]US/i.test(v.lang)&&/female|samantha|ava|allison|susan|zoe/i.test(v.name))
+              ||vs.find(v=>/^en[-_]US/i.test(v.lang))
+              ||vs.find(v=>/^en/i.test(v.lang))||null;
+  }
+  if('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged=pickVoice; }
 
   window.primeSpeech=function(){
     if(!('speechSynthesis' in window))return;
     try{ const w=new SpeechSynthesisUtterance(' '); w.volume=0; speechSynthesis.speak(w); }catch(e){}
+    pickVoice();
   };
 
   function speak(text){
@@ -468,30 +493,70 @@
     speaking=true;
     if(recog){ try{recog.stop();}catch(e){} }
     const u=new SpeechSynthesisUtterance(text);
-    u.rate=1.05; u.pitch=0.9; u.lang='en-IN';
+    if(!chosenVoice)pickVoice();
+    if(chosenVoice)u.voice=chosenVoice;
+    u.lang=(chosenVoice&&chosenVoice.lang)||'en-US';
+    u.rate=1.22; u.pitch=1.05;
     const resume=()=>{ speaking=false; if(recogWanted)startRecognition(); };
     u.onend=resume; u.onerror=resume;
     try{ speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){ resume(); }
   }
 
-  function heard(raw){
-    const text=(raw||'').trim();
-    if(!text)return;
-    if(armed){ armed=false; voiceSubmit(text); return; }   // woken already; this is the query
-    const m=text.match(WAKE);
-    if(!m)return;                                          // not addressed to SKYE
-    const rest=text.slice(m[0].length).trim();
-    if(rest)voiceSubmit(rest);
-    else { armed=true; vstatus('YES?'); }                  // just "Skye" - wait for the query
+  // ---- false-start trimming ----
+  // "dynamic vector dynamic array is vector" -> "dynamic array is vector".
+  // Only the opening few words are searched, so a genuine later repeat
+  // ("the sky is blue and the sky is grey") is left intact.
+  function trimFalseStart(text){
+    const w=text.split(/\s+/);
+    if(w.length<4)return text;
+    const norm=x=>x.toLowerCase().replace(/[^a-z0-9]/g,'');
+    const first=norm(w[0]);
+    if(!first)return text;
+    let cut=0;
+    for(let i=2;i<Math.min(w.length,5);i++){ if(norm(w[i])===first)cut=i; }
+    return cut?w.slice(cut).join(' '):text;
   }
 
-  function voiceSubmit(text){
+  function showPreview(t){
+    if(!t&&!previewOn)return;      // never clobber something typed by hand
+    previewOn=!!t;
+    input.value=t;
+    input.style.height='auto';
+    input.style.height=Math.min(input.scrollHeight,60)+'px';
+  }
+
+  function scheduleCommit(){
+    if(commitTimer)clearTimeout(commitTimer);
+    commitTimer=setTimeout(commitSpeech,COMMIT_MS);
+  }
+
+  function commitSpeech(){
+    commitTimer=null;
+    let text=pending.trim();
+    pending=''; showPreview('');
+    if(!text)return;
+
+    if(STOP.test(text)){
+      recogWanted=false;
+      if(recog){ try{recog.abort();}catch(e){} }
+      vstatus('MIC OFF - RELOAD TO RESUME');
+      return;
+    }
+    if(CANCEL.test(text)){ vstatus('CANCELLED'); return; }
+
+    text=text.replace(WAKE,'').trim();                   // wake word optional
+    text=trimFalseStart(text);
+    // Drop stray noise and single filler words picked up between sentences.
+    if(text.replace(/[^a-z0-9]/gi,'').length<3)return;
+    if(!/\s/.test(text)&&FILLER.test(text.replace(/[^a-z0-9]/gi,'')))return;
     if(waiting){ vstatus('BUSY - ONE MOMENT'); return; }
-    input.value=text;
+
+    input.value=text; previewOn=false;
     send();
   }
 
   window.startVoice=function(){ recogWanted=true; startRecognition(); };
+  window.stopVoice=function(){ recogWanted=false; if(recog){ try{recog.abort();}catch(e){} } vstatus('MIC OFF'); };
 
   function startRecognition(){
     const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -499,12 +564,17 @@
     if(recog){ try{recog.abort();}catch(e){} }
     recog=new SR();
     recog.continuous=true;
-    recog.interimResults=false;
-    recog.lang='en-IN';
+    recog.interimResults=true;   // show what is heard, so a misspeak is visible
+    recog.lang='en-IN';          // how YOU speak; the reply voice is separate
     recog.onresult=(e)=>{
+      let fin='',interim='';
       for(let i=e.resultIndex;i<e.results.length;i++){
-        if(e.results[i].isFinal)heard(e.results[i][0].transcript);
+        const r=e.results[i];
+        if(r.isFinal)fin+=r[0].transcript; else interim+=r[0].transcript;
       }
+      if(fin)pending=(pending?pending+' ':'')+fin.trim();
+      showPreview(((pending?pending+' ':'')+interim.trim()).trim());
+      scheduleCommit();
     };
     recog.onerror=(e)=>{
       console.warn('recognition error:',e.error);
@@ -514,7 +584,7 @@
     };
     // Recognition self-terminates on silence; restart unless SKYE is talking.
     recog.onend=()=>{ if(recogWanted&&!speaking){ try{recog.start();}catch(e){} } };
-    try{ recog.start(); vstatus('SAY "SKYE"'); }catch(e){ console.warn(e); }
+    try{ recog.start(); vstatus('LISTENING'); }catch(e){ console.warn(e); }
   }
 
   sendBtn.addEventListener('click',send);
