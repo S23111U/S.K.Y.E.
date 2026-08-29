@@ -362,17 +362,39 @@
     ws.onopen=()=>{dot.classList.add('online');statusT.textContent='ONLINE';};
     ws.onclose=()=>{dot.classList.remove('online');statusT.textContent='OFFLINE';setTimeout(connect,3000);};
     ws.onerror=()=>ws.close();
+    let streamed='';
     ws.onmessage=(e)=>{
-      // Show answer
-      qaA.style.display='block';
-      qaA.className='qa-answer';
-      qaA.textContent=e.data;
-      // Trigger re-animation
-      void qaA.offsetWidth;
-      qaA.className='qa-answer';
-      waiting=false;
-      sendBtn.disabled=false;
-      if(window.setSkyeText)window.setSkyeText('');
+      let msg;
+      try{msg=JSON.parse(e.data);}catch(err){return;}
+
+      if(msg.type==='start'){
+        streamed='';
+        qaA.style.display='block';
+        qaA.className='qa-answer';
+        qaA.textContent='';
+        if(window.setSkyeText)window.setSkyeText('RESPONDING');
+      }
+      else if(msg.type==='token'){
+        streamed+=msg.text;
+        qaA.textContent=streamed;
+      }
+      else if(msg.type==='tool'){
+        qaA.textContent='['+msg.name+']';
+        if(window.setSkyeText)window.setSkyeText('EXECUTING');
+      }
+      else if(msg.type==='done'){
+        qaA.textContent=msg.text;
+        void qaA.offsetWidth;
+        qaA.className='qa-answer';
+        waiting=false;
+        sendBtn.disabled=false;
+        if(window.setSkyeText)window.setSkyeText('');
+      }
+      else if(msg.type==='error'){
+        qaA.textContent='[error] '+msg.message;
+        waiting=false;
+        sendBtn.disabled=false;
+      }
     };
   }
   connect();

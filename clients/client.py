@@ -1,6 +1,14 @@
+import json
+import os
 import socket
+import sys
+
 import pyttsx3
 import speech_recognition as sr
+
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, BASE_DIR)
+from core.protocol import FrameReader
 
 HOST = "127.0.0.1"
 PORT = 12345
@@ -17,20 +25,22 @@ def command():
             return speechinput
         except Exception as e:
             print(e)
-            return "Couldn't Understand Sir. Can you repeat again?"
+            # Returning a sentence here made it look like something the user
+            # said; it was ingested 36 times as a "memory" about them.
+            return None
 
 
-def receive_all(sock):
-    buffer = b""
-    delimiter = b"..."
+def receive_reply(sock):
+    reader = FrameReader()
     while True:
         chunk = sock.recv(4096)
         if not chunk:
-            break
-        buffer += chunk
-        if delimiter in buffer:
-            break
-    return buffer.rstrip(delimiter)
+            return ""
+        for f in reader.feed(chunk):
+            if f["type"] == "done":
+                return f["text"]
+            if f["type"] == "error":
+                return "Something went wrong."
 
 
 def say(text):
@@ -46,13 +56,17 @@ if __name__ == "__main__":
         while True:
             print("Listening...")
             message = command()
+            if not message:
+                continue
             try:
                 client_socket.sendall(message.encode())
             except BrokenPipeError:
                 print("Connection closed by server")
                 break
-            response = receive_all(client_socket)
+            response = receive_reply(client_socket)
+            if not response:
+                print("Connection closed by server")
+                break
 
-            decoded = response.decode()
-            print(f"Response from server:\n{decoded}")
-            say(decoded)
+            print(f"Response from server:\n{response}")
+            say(response)
