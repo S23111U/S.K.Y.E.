@@ -3,13 +3,6 @@
 logs
 .vscode
 SKYE
-augment_dataset.py
-dataset.jsonl
-dataset_v2.jsonl
-dataset_v3.jsonl
-long_form_extra.py
-long_form_extra2.py
-long_form_extra3.py
 
 # OS / editor cruft
 .DS_Store
@@ -17,6 +10,3 @@ long_form_extra3.py
 # Python bytecode
 __pycache__/
 *.pyc
-
-# Local one-off backup made by scripts/clean_memory.py
-memory/semantics.db.backup
