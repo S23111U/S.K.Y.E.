@@ -459,13 +459,18 @@
   const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
   const COMMIT_MS=1400;   // silence after speech before it is sent
 
-  let recog=null,recogWanted=false,speaking=false;
+  let recog=null,recogWanted=false,speaking=false,asleep=false;
   let pending='',commitTimer=null,previewOn=false;
+  // While asleep the microphone stays LIVE and audio still reaches Apple; the
+  // only difference is that nothing but the wake word is acted on.
+  const WAKE_ONLY=/^(?:wake up|wake|you there|are you there|hello|hey)$/i;
 
   function vstatus(t){ if(window.setSkyeText)window.setSkyeText(t); }
 
-  // ---- reply voice: prefer a US English female voice ----
-  const VOICE_PREFS=['Samantha','Ava','Allison','Susan','Zoe','Nicky','Google US English'];
+  // ---- reply voice: FRIDAY (Iron Man) is Kerry Condon, i.e. Irish, so the
+  // ---- target is an en-IE female voice. Moira is the macOS one. Falls back
+  // ---- to en-GB and then en-US rather than going silent.
+  const VOICE_PREFS=['Moira','Fiona','Siobhan','Karen','Serena','Samantha'];
   let chosenVoice=null;
   function pickVoice(){
     if(!('speechSynthesis' in window))return;
@@ -475,7 +480,8 @@
       const v=vs.find(x=>x.name===name)||vs.find(x=>x.name.startsWith(name));
       if(v){ chosenVoice=v; return; }
     }
-    chosenVoice=vs.find(v=>/^en[-_]US/i.test(v.lang)&&/female|samantha|ava|allison|susan|zoe/i.test(v.name))
+    chosenVoice=vs.find(v=>/^en[-_]IE/i.test(v.lang))
+              ||vs.find(v=>/^en[-_]GB/i.test(v.lang))
               ||vs.find(v=>/^en[-_]US/i.test(v.lang))
               ||vs.find(v=>/^en/i.test(v.lang))||null;
   }
@@ -495,8 +501,8 @@
     const u=new SpeechSynthesisUtterance(text);
     if(!chosenVoice)pickVoice();
     if(chosenVoice)u.voice=chosenVoice;
-    u.lang=(chosenVoice&&chosenVoice.lang)||'en-US';
-    u.rate=1.22; u.pitch=1.05;
+    u.lang=(chosenVoice&&chosenVoice.lang)||'en-IE';
+    u.rate=1.08; u.pitch=1.0;
     const resume=()=>{ speaking=false; if(recogWanted)startRecognition(); };
     u.onend=resume; u.onerror=resume;
     try{ speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){ resume(); }
@@ -518,6 +524,7 @@
   }
 
   function showPreview(t){
+    if(asleep)return;              // ambient speech must not fill the input box
     if(!t&&!previewOn)return;      // never clobber something typed by hand
     previewOn=!!t;
     input.value=t;
@@ -536,10 +543,23 @@
     pending=''; showPreview('');
     if(!text)return;
 
+    // Asleep: ignore everything that is not the wake word.
+    if(asleep){
+      const m=text.match(WAKE);
+      if(!m)return;
+      asleep=false;
+      vstatus('LISTENING');
+      const rest=text.slice(m[0].length).trim();
+      speak('Yes?');
+      if(rest&&!WAKE_ONLY.test(rest)&&rest.replace(/[^a-z0-9]/gi,'').length>=3&&!waiting){
+        input.value=trimFalseStart(rest); previewOn=false; send();
+      }
+      return;
+    }
+
     if(STOP.test(text)){
-      recogWanted=false;
-      if(recog){ try{recog.abort();}catch(e){} }
-      vstatus('MIC OFF - RELOAD TO RESUME');
+      asleep=true; pending=''; showPreview('');
+      vstatus('SLEEPING - SAY "SKYE"');
       return;
     }
     if(CANCEL.test(text)){ vstatus('CANCELLED'); return; }
@@ -555,7 +575,7 @@
     send();
   }
 
-  window.startVoice=function(){ recogWanted=true; startRecognition(); };
+  window.startVoice=function(){ recogWanted=true; asleep=false; startRecognition(); };
   window.stopVoice=function(){ recogWanted=false; if(recog){ try{recog.abort();}catch(e){} } vstatus('MIC OFF'); };
 
   function startRecognition(){
