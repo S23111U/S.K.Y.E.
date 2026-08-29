@@ -301,10 +301,24 @@
       audioContext.createMediaStreamSource(stream).connect(analyser);
       dataArray=new Uint8Array(analyser.frequencyBinCount);
       isAudioActive=true;
-      document.getElementById('start-btn').classList.add('hidden');
-      document.getElementById('status-corner').innerHTML='SYSTEM_ONLINE<br>LISTENING_MODE';
+      document.getElementById('start-btn')?.classList.add('hidden');
+      const sc=document.getElementById('status-corner');
+      if(sc)sc.innerHTML='SYSTEM_ONLINE<br>LISTENING_MODE';
       setSkyeText("I'M LISTENING...");
-    }catch(e){ alert('Microphone access denied. Voice features unavailable.'); }
+    }catch(e){
+      // Report what actually failed. This used to say "access denied" for every
+      // error, including missing devices and insecure contexts.
+      console.error('initAudio failed:', e);
+      const why = {
+        NotAllowedError:'Permission was refused. Check the browser site permission AND macOS System Settings > Privacy & Security > Microphone.',
+        NotFoundError:'No microphone was found on this machine.',
+        NotReadableError:'The microphone is in use by another app.',
+        SecurityError:'Blocked: the page is not in a secure context (use http://localhost, not a LAN IP).'
+      }[e.name] || e.message;
+      alert('Microphone unavailable ('+e.name+').\n\n'+why+
+            '\n\nNote: this only animates the orb. Voice chat is clients/client.py.');
+      document.getElementById('start-btn').textContent='AUDIO UNAVAILABLE';
+    }
   };
   function getVolume(){
     if(!isAudioActive)return 0;
