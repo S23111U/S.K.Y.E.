@@ -294,6 +294,9 @@
   let audioContext,analyser,dataArray,isAudioActive=false;
   window.initAudio=async function(){
     try{
+      // Safari will not speak later unless synthesis is touched during a real
+      // user gesture, so warm it up here on the click, before any await.
+      if(window.primeSpeech)window.primeSpeech();
       const AC=window.AudioContext||window.webkitAudioContext; audioContext=new AC();
       if(audioContext.state==='suspended')await audioContext.resume();
       const stream=await navigator.mediaDevices.getUserMedia({audio:true});
@@ -305,6 +308,7 @@
       const sc=document.getElementById('status-corner');
       if(sc)sc.innerHTML='SYSTEM_ONLINE<br>LISTENING_MODE';
       setSkyeText("I'M LISTENING...");
+      if(window.startVoice)window.startVoice();
     }catch(e){
       // Report what actually failed. This used to say "access denied" for every
       // error, including missing devices and insecure contexts.
@@ -403,6 +407,7 @@
         waiting=false;
         sendBtn.disabled=false;
         if(window.setSkyeText)window.setSkyeText('');
+        speak(msg.text);
       }
       else if(msg.type==='error'){
         qaA.textContent='[error] '+msg.message;
@@ -438,6 +443,78 @@
     input.style.height='auto';
     waiting=true;
     sendBtn.disabled=true;
+  }
+
+  // ── VOICE: wake word in, speech out ────────────────────────────────────
+  // Speech synthesis is on-device. Speech RECOGNITION is not: the browser
+  // streams microphone audio to Apple/Google. That is the same trade the old
+  // clients/client.py made with recognize_google().
+  //
+  // The wake word is matched only at the START of an utterance, so ordinary
+  // speech containing "sky" (e.g. "why is the sky blue") cannot trigger it.
+  const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski)\b[\s,.!?-]*/i;
+  let recog=null,recogWanted=false,armed=false,speaking=false;
+
+  function vstatus(t){ if(window.setSkyeText)window.setSkyeText(t); }
+
+  window.primeSpeech=function(){
+    if(!('speechSynthesis' in window))return;
+    try{ const w=new SpeechSynthesisUtterance(' '); w.volume=0; speechSynthesis.speak(w); }catch(e){}
+  };
+
+  function speak(text){
+    if(!text||!('speechSynthesis' in window))return;
+    // Stop listening first, or the mic hears SKYE and re-triggers on her own voice.
+    speaking=true;
+    if(recog){ try{recog.stop();}catch(e){} }
+    const u=new SpeechSynthesisUtterance(text);
+    u.rate=1.05; u.pitch=0.9; u.lang='en-IN';
+    const resume=()=>{ speaking=false; if(recogWanted)startRecognition(); };
+    u.onend=resume; u.onerror=resume;
+    try{ speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){ resume(); }
+  }
+
+  function heard(raw){
+    const text=(raw||'').trim();
+    if(!text)return;
+    if(armed){ armed=false; voiceSubmit(text); return; }   // woken already; this is the query
+    const m=text.match(WAKE);
+    if(!m)return;                                          // not addressed to SKYE
+    const rest=text.slice(m[0].length).trim();
+    if(rest)voiceSubmit(rest);
+    else { armed=true; vstatus('YES?'); }                  // just "Skye" - wait for the query
+  }
+
+  function voiceSubmit(text){
+    if(waiting){ vstatus('BUSY - ONE MOMENT'); return; }
+    input.value=text;
+    send();
+  }
+
+  window.startVoice=function(){ recogWanted=true; startRecognition(); };
+
+  function startRecognition(){
+    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!SR){ vstatus('SPEECH RECOGNITION UNSUPPORTED'); recogWanted=false; return; }
+    if(recog){ try{recog.abort();}catch(e){} }
+    recog=new SR();
+    recog.continuous=true;
+    recog.interimResults=false;
+    recog.lang='en-IN';
+    recog.onresult=(e)=>{
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        if(e.results[i].isFinal)heard(e.results[i][0].transcript);
+      }
+    };
+    recog.onerror=(e)=>{
+      console.warn('recognition error:',e.error);
+      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+        recogWanted=false; vstatus('SPEECH RECOGNITION BLOCKED');
+      }
+    };
+    // Recognition self-terminates on silence; restart unless SKYE is talking.
+    recog.onend=()=>{ if(recogWanted&&!speaking){ try{recog.start();}catch(e){} } };
+    try{ recog.start(); vstatus('SAY "SKYE"'); }catch(e){ console.warn(e); }
   }
 
   sendBtn.addEventListener('click',send);
