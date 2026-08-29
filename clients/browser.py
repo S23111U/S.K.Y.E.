@@ -3,6 +3,8 @@ import websockets
 import socket
 import http.server
 import socketserver
+import json
+import sys
 import threading
 import webbrowser
 import os
@@ -16,6 +18,9 @@ HTTP_PORT = 8000
 # Project root = parent of "clients" folder
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HTML_PATH = "clients/browser.html"
+
+sys.path.insert(0, BASE_DIR)
+from core.protocol import FrameReader
 
 
 # ---------- Serve HTML over HTTP ----------
@@ -35,29 +40,31 @@ def open_browser():
 # ---------- WebSocket <-> TCP Bridge ----------
 async def handle_browser(websocket):
     print("🌐 Browser connected")
+    loop = asyncio.get_event_loop()
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.connect((AI_HOST, AI_PORT))
+    reader = FrameReader()
+
     try:
         async for message in websocket:
             print(f"[Browser]: {message}")
+            await loop.sock_sendall(sock, message.encode())
 
-            # Send message to SKYE TCP server
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.connect((AI_HOST, AI_PORT))
-                s.sendall(message.encode())
-
-                data = b""
-                while not data.endswith(b"..."):
-                    chunk = s.recv(4096)
-                    if not chunk:
-                        break
-                    data += chunk
-
-            reply = data.decode().replace("...", "").strip()
-            print(f"[SKYE]: {reply}")
-
-            await websocket.send(reply)
-
+            while True:
+                chunk = await loop.sock_recv(sock, 4096)
+                if not chunk:
+                    return
+                done = False
+                for f in reader.feed(chunk):
+                    await websocket.send(json.dumps(f))
+                    if f["type"] in ("done", "error"):
+                        done = True
+                if done:
+                    break
     except Exception as e:
         print("Browser disconnected:", e)
+    finally:
+        sock.close()
 
 
 async def start_ws_server():

@@ -7,9 +7,7 @@ from mlx_lm import load, generate
 # --- CONFIGS ---
 LOGS_DIR = "logs"
 PROCESSED_DIR = "logs/processed_logs"
-PROPOSED_FACTS_FILE = "proposed_facts.jsonl"
 MODEL_PATH = "mlx-community/Meta-Llama-3-8B-Instruct-4bit"
-ADAPTER_PATH = "SKYE"
 PERSISTENT_PROFILE = "memory/persistent_profile.json"
 
 # --- MODEL PROMPT ---
@@ -40,9 +38,9 @@ def main():
     logging.info("--- Starting S.K.Y.E. Fact Proposal Analyzer ---")
 
     # Loading the model
-    logging.info("Loading model with adapters...")
-    model, tokenizer = load(MODEL_PATH, adapter_path=ADAPTER_PATH)
-    logging.info(f"Model loaded successfully - {MODEL_PATH} (ADAPTER: {ADAPTER_PATH})")
+    logging.info("Loading model...")
+    model, tokenizer = load(MODEL_PATH)
+    logging.info(f"Model loaded successfully - {MODEL_PATH}")
 
     # Searching for the logs folder
     if not os.path.exists(LOGS_DIR):
@@ -134,12 +132,26 @@ def main():
                             for k in keys[:-1]:
                                 d = d.setdefault(k, {})
                             
-                            if action in ["SET", "UPDATE", "ADD"]:
-                                # If ADD to a list
-                                if action == "ADD" and isinstance(d.get(keys[-1]), list):
-                                    d[keys[-1]].append(value)
+                            key = keys[-1]
+                            if action == "ADD":
+                                # ADD always accumulates into a list. An existing
+                                # scalar is promoted rather than overwritten, so the
+                                # first ADD no longer stores a bare string and later
+                                # ADDs no longer clobber it.
+                                existing = d.get(key)
+                                if isinstance(existing, list):
+                                    merged = list(existing)
+                                elif existing is None:
+                                    merged = []
                                 else:
-                                    d[keys[-1]] = value
+                                    merged = [existing]
+                                incoming = value if isinstance(value, list) else [value]
+                                for item in incoming:
+                                    if item not in merged:
+                                        merged.append(item)
+                                d[key] = merged
+                            elif action in ("SET", "UPDATE"):
+                                d[key] = value
                         
                         with open(PERSISTENT_PROFILE, "w") as pf:
                             json.dump(profile, pf, indent=4)

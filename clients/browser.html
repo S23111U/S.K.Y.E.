@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>S.K.Y.E.</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Share+Tech+Mono&family=Inter:wght@300;400;500&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --primary-color: #cc4400;
+      --secondary-color: #ff6600;
+      --success: #22c55e;
+      --danger: #ef4444;
+    }
+
+    body { margin: 0; overflow: hidden; background: #fffbf4; font-family: 'Orbitron', sans-serif; transition: background-color 1s ease; }
+    canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; }
+
+    /* ── Top bar ── */
+    #top-bar {
+      position: absolute; top: 0; left: 0; right: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 18px 28px;
+      background: linear-gradient(to bottom, rgba(255,251,244,0.7) 0%, transparent 100%);
+      backdrop-filter: blur(4px);
+    }
+    #header-text { color: var(--primary-color); font-size: 18px; letter-spacing: 8px; font-weight: 400; transition: color 1s ease; }
+    #mode-btns { display: flex; gap: 8px; }
+    #mode-btns button {
+      background: none; border: 1px solid currentColor; padding: 5px 12px;
+      font-family: 'Share Tech Mono', monospace; font-size: 11px; cursor: pointer;
+      letter-spacing: 1px; transition: all 0.2s;
+    }
+    #mode-btns button:hover { color: white !important; }
+
+    .status-dot { display: flex; align-items: center; gap: 7px; font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--primary-color); }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); transition: background 0.4s; }
+    .dot.online { background: var(--success); box-shadow: 0 0 6px var(--success); }
+
+    /* ── Status corner ── */
+    #status-corner {
+      position: absolute; bottom: 200px; left: 28px; z-index: 20;
+      font-family: 'Share Tech Mono', monospace; font-size: 10px;
+      color: var(--primary-color); opacity: 0.6;
+      border-left: 2px solid var(--primary-color); padding-left: 10px;
+      transition: color 1s ease, border-color 1s ease;
+    }
+
+    /* ── Init button ── */
+    #start-btn {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      z-index: 20; pointer-events: auto;
+      background: transparent; border: 1px solid var(--primary-color);
+      color: var(--primary-color); padding: 10px 24px;
+      font-family: 'Share Tech Mono', monospace; font-size: 13px;
+      cursor: pointer; letter-spacing: 2px; transition: all 0.3s ease;
+    }
+    #start-btn:hover { background: var(--primary-color); color: white; }
+    #start-btn.hidden { display: none; }
+
+    /* ── Transcript near orb ── */
+    #transcript-area {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, 120px);
+      z-index: 20; text-align: center; width: 400px; pointer-events: none;
+    }
+    #transcript-text {
+      font-family: 'Share Tech Mono', monospace; font-size: 14px; letter-spacing: 2px;
+      text-transform: uppercase;
+      background: linear-gradient(to bottom, var(--secondary-color), var(--primary-color));
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .cursor { display: none; width: 7px; height: 14px; background: var(--secondary-color); margin-left: 4px; animation: blink 1s infinite; vertical-align: middle; }
+    .cursor.active { display: inline-block; }
+    @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
+
+    /* ── QA Display ── */
+    #qa-display {
+      position: absolute; bottom: 80px; left: 0; right: 0; z-index: 20;
+      padding: 0 40px;
+      display: flex; flex-direction: column; gap: 6px;
+      pointer-events: none;
+    }
+    .qa-question {
+      font-family: 'Share Tech Mono', monospace; font-size: 13px;
+      color: rgba(204,68,0,0.55); letter-spacing: 2px; text-transform: uppercase;
+      animation: fade-up 0.2s ease;
+    }
+    .qa-question::before { content: '> '; opacity: 0.5; }
+    .qa-answer {
+      font-family: 'Share Tech Mono', monospace; font-size: 14px; line-height: 1.7;
+      color: var(--primary-color); letter-spacing: 1px;
+      animation: fade-up 0.25s ease;
+    }
+    @keyframes fade-up { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    .typing-dots span { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: var(--primary-color); margin: 0 2px; animation: blink 1.2s ease-in-out infinite; vertical-align: middle; }
+    .typing-dots span:nth-child(2) { animation-delay: 0.2s; }
+    .typing-dots span:nth-child(3) { animation-delay: 0.4s; }
+
+    /* ── Input bar ── */
+    #input-bar {
+      position: absolute; bottom: 0; left: 0; right: 0; z-index: 20;
+      display: flex; gap: 8px; padding: 14px 40px 20px; align-items: flex-end;
+      background: linear-gradient(to top, rgba(255,251,244,0.6) 0%, transparent 100%);
+    }
+    #msg-input {
+      flex: 1; background: transparent; border: none; border-bottom: 1px solid rgba(204,68,0,0.35);
+      border-radius: 0; padding: 8px 0; color: #331100;
+      font-family: 'Share Tech Mono', monospace; font-size: 14px; letter-spacing: 2px;
+      resize: none; max-height: 60px; outline: none; transition: border-color 0.2s;
+      text-transform: uppercase;
+    }
+    #msg-input:focus { border-bottom-color: var(--primary-color); }
+    #msg-input::placeholder { color: rgba(204,68,0,0.3); }
+    #send-btn {
+      width: 32px; height: 32px; border-radius: 0; border: 1px solid rgba(204,68,0,0.4);
+      background: transparent; cursor: pointer; flex-shrink: 0;
+      display: flex; align-items: center; justify-content: center;
+      transition: all 0.2s;
+    }
+    #send-btn:hover { background: var(--primary-color); }
+    #send-btn:hover svg { fill: white; }
+    #send-btn:active { transform: scale(0.93); }
+    #send-btn:disabled { opacity: 0.25; cursor: not-allowed; }
+    #send-btn svg { width: 14px; height: 14px; fill: var(--primary-color); transition: fill 0.2s; }
+  </style>
+</head>
+<body>
+
+<!-- Top bar -->
+<div id="top-bar">
+  <div id="header-text">S.K.Y.E.</div>
+  <div id="mode-btns">
+    <button onclick="setMode('default')" style="color:#cc4400;">DEFAULT</button>
+    <button onclick="setMode('health')"  style="color:#cc0000;">HEALTH</button>
+    <button onclick="setMode('knowledge')" style="color:#0044aa;">KNOWLEDGE</button>
+  </div>
+  <div class="status-dot">
+    <div class="dot" id="dot"></div>
+    <span id="status-text" style="font-family:'Share Tech Mono',monospace;font-size:11px;">OFFLINE</span>
+  </div>
+</div>
+
+<!-- Init button -->
+<button id="start-btn" onclick="initAudio()">INITIALIZE SYSTEMS</button>
+
+<!-- Transcript near orb -->
+<div id="transcript-area">
+  <span id="transcript-text"></span><span class="cursor" id="cursor-el"></span>
+</div>
+
+<!-- QA Display -->
+<div id="qa-display">
+  <div class="qa-question" id="qa-q" style="display:none"></div>
+  <div class="qa-answer"  id="qa-a" style="display:none"></div>
+</div>
+
+<!-- Input bar -->
+<div id="input-bar">
+  <textarea id="msg-input" rows="1" placeholder="QUERY S.K.Y.E..."></textarea>
+  <button id="send-btn" title="Send">
+    <svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2z"/></svg>
+  </button>
+</div>
+
+<script type="module">
+  import * as THREE from 'https://unpkg.com/three@0.160.0/build/three.module.js';
+
+  // ── PALETTES ──
+  const PALETTES = {
+    default:   { primary: new THREE.Color(0xcc4400), secondary: new THREE.Color(0xffaa44), atmosphere: new THREE.Color(0xff8844), cssPrim: '#cc4400', cssSec: '#ff6600', fog: 0xffeedd },
+    health:    { primary: new THREE.Color(0xcc0000), secondary: new THREE.Color(0xff4444), atmosphere: new THREE.Color(0xff0000), cssPrim: '#cc0000', cssSec: '#ff4444', fog: 0xffdddd },
+    knowledge: { primary: new THREE.Color(0x0044aa), secondary: new THREE.Color(0x0080FF), atmosphere: new THREE.Color(0x8899ff), cssPrim: '#0044aa', cssSec: '#00aaff', fog: 0xeef4ff }
+  };
+  let currentTarget = PALETTES.default;
+  const activeMaterials = { primary: [], secondary: [], atmosphere: [] };
+
+  // ── THREE SETUP ──
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0xffeedd, 0.02);
+  const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+  camera.position.z = 35;
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(window.devicePixelRatio);
+  document.body.appendChild(renderer.domElement);
+
+  const galaxy = new THREE.Group(); scene.add(galaxy);
+  const atmosphereGroup = new THREE.Group(); scene.add(atmosphereGroup);
+
+  function getGlowSpriteTex() {
+    const c = document.createElement('canvas'); c.width = c.height = 128;
+    const ctx = c.getContext('2d'), g = ctx.createRadialGradient(64,64,0,64,64,64);
+    g.addColorStop(0,'rgba(255,255,255,0.85)'); g.addColorStop(1,'rgba(255,255,255,0)');
+    ctx.fillStyle = g; ctx.fillRect(0,0,128,128); return new THREE.CanvasTexture(c);
+  }
+  const glowMat = new THREE.SpriteMaterial({ map: getGlowSpriteTex(), color: currentTarget.atmosphere, transparent: true, blending: THREE.NormalBlending });
+  activeMaterials.atmosphere.push(glowMat);
+  const glowSprite = new THREE.Sprite(glowMat); glowSprite.scale.set(70,70,1); glowSprite.position.z = -10; atmosphereGroup.add(glowSprite);
+
+  function getCircuitTex() {
+    const c = document.createElement('canvas'); c.width = c.height = 256;
+    const ctx = c.getContext('2d'); ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1.5;
+    for(let i=0;i<25;i++){const x=Math.random()*256,y=Math.random()*256;ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+(Math.random()*60-30),y+(Math.random()*60-30));ctx.stroke();}
+    return new THREE.CanvasTexture(c);
+  }
+  const circuitTex = getCircuitTex();
+  const shellGroup = new THREE.Group(); galaxy.add(shellGroup);
+  function createPlate(r,ps,pl,ts,tl){
+    const geo=new THREE.SphereGeometry(r,32,32,ps,pl,ts,tl);
+    const mat=new THREE.MeshBasicMaterial({map:circuitTex,transparent:true,opacity:0.6,side:THREE.DoubleSide,blending:THREE.NormalBlending,depthWrite:false,color:currentTarget.secondary});
+    activeMaterials.secondary.push(mat);
+    const m=new THREE.Mesh(geo,mat);
+    const wm=new THREE.LineBasicMaterial({color:currentTarget.primary,transparent:true,opacity:0.3});
+    activeMaterials.primary.push(wm);
+    m.add(new THREE.LineSegments(new THREE.WireframeGeometry(geo),wm)); return m;
+  }
+  shellGroup.add(createPlate(12,0,2,0,1.5)); shellGroup.add(createPlate(12.2,2.5,1.5,1,2));
+  shellGroup.add(createPlate(11.8,4.5,1.5,0.5,2.5)); shellGroup.add(createPlate(12.5,1,1,2,1));
+
+  function makeBrain(r,d,type,op){
+    const mat=new THREE.MeshBasicMaterial({color:type==='primary'?currentTarget.primary:currentTarget.secondary,wireframe:true,transparent:true,opacity:op,blending:THREE.NormalBlending,side:THREE.DoubleSide});
+    if(type==='primary')activeMaterials.primary.push(mat);else activeMaterials.secondary.push(mat);
+    return new THREE.Mesh(new THREE.IcosahedronGeometry(r,d),mat);
+  }
+  const brain1=makeBrain(7,1,'primary',0.5); galaxy.add(brain1);
+  const brain2=makeBrain(8,0,'secondary',0.4); galaxy.add(brain2);
+
+  const coreGroup=new THREE.Group(); galaxy.add(coreGroup); const layers=[];
+  for(let i=0;i<10;i++){
+    const mat=new THREE.MeshBasicMaterial({color:currentTarget.secondary,transparent:true,opacity:0.1,side:THREE.FrontSide,depthWrite:false,blending:THREE.NormalBlending});
+    activeMaterials.secondary.push(mat);
+    const m=new THREE.Mesh(new THREE.SphereGeometry(0.2+(2.0*(i/9)),32,32),mat);
+    m.userData={baseOpacity:0.15,maxOpacity:0.5-(i*0.03),index:i}; coreGroup.add(m); layers.push(m);
+  }
+
+  const gimbalPivot=new THREE.Group(); galaxy.add(gimbalPivot);
+  const gimbalPivot2=new THREE.Group(); galaxy.add(gimbalPivot2);
+  const gimbalSegments1=[]; const gimbalSegments2=[];
+  function createArc(group,arr,r,angle,count,rot){
+    const seg=angle/count;
+    for(let i=0;i<count;i++){
+      const geo=new THREE.TorusGeometry(r,0.4,4,6,seg);
+      const mat=new THREE.MeshBasicMaterial({color:currentTarget.primary,transparent:true,opacity:0.1});
+      activeMaterials.primary.push(mat);
+      const wm=new THREE.LineBasicMaterial({color:currentTarget.secondary,opacity:1,transparent:true});
+      activeMaterials.secondary.push(wm);
+      const m=new THREE.Mesh(geo,mat); m.add(new THREE.LineSegments(new THREE.WireframeGeometry(geo),wm));
+      m.rotation.z=i*seg; m.userData={index:i,total:count,radius:r,currentRadius:r,midAngle:i*seg+(seg/2)};
+      group.add(m); arr.push(m);
+    }
+    group.rotation.z=rot;
+  }
+  createArc(gimbalPivot,gimbalSegments1,15,Math.PI,100,Math.PI/2);
+  createArc(gimbalPivot2,gimbalSegments2,15,Math.PI,100,-Math.PI/2);
+
+  const beamGroup=new THREE.Group(); galaxy.add(beamGroup); const activeBeams=[];
+  function genPath(){
+    const r1=2,mn=4,mx=12,t1=Math.random()*Math.PI*2,p1e=Math.acos(2*Math.random()-1);
+    const v1=new THREE.Vector3().setFromSphericalCoords(r1,p1e,t1);
+    const r3=mn+Math.random()*(mx-mn),t3=t1+(Math.random()-.5)*2,p3e=p1e+(Math.random()-.5)*2;
+    const v3=new THREE.Vector3().setFromSphericalCoords(r3,p3e,t3);
+    const v2=new THREE.Vector3().setFromSphericalCoords((r1+r3)*.5,(p1e+p3e)*.5,(t1+t3)*.5);
+    return new THREE.CatmullRomCurve3([v1,v2,v3]);
+  }
+  for(let i=0;i<20;i++){
+    const mat=new THREE.MeshBasicMaterial({color:currentTarget.primary,transparent:true,opacity:0,blending:THREE.NormalBlending});
+    activeMaterials.primary.push(mat);
+    const m=new THREE.Mesh(new THREE.TubeGeometry(genPath(),8,0.06,4,false),mat);
+    m.userData={active:false,life:0,targetLife:0}; beamGroup.add(m); activeBeams.push(m);
+  }
+  function spawnBeam(b){b.geometry.dispose();b.geometry=new THREE.TubeGeometry(genPath(),8,0.06,4,false);b.userData={active:true,life:0,targetLife:40+Math.random()*30};}
+
+  // ── PALETTE SWITCH ──
+  window.setMode = function(mode){
+    if(!PALETTES[mode])return;
+    currentTarget=PALETTES[mode];
+    document.documentElement.style.setProperty('--primary-color',currentTarget.cssPrim);
+    document.documentElement.style.setProperty('--secondary-color',currentTarget.cssSec);
+  };
+
+  // ── TRANSCRIPT ──
+  const transcriptEl=document.getElementById('transcript-text');
+  const cursorEl=document.getElementById('cursor-el');
+  window.setSkyeText=function(text){
+    transcriptEl.textContent=text;
+    cursorEl.classList.toggle('active',!!(text&&text.length));
+  };
+
+  // ── AUDIO ──
+  let audioContext,analyser,dataArray,isAudioActive=false;
+  window.initAudio=async function(){
+    try{
+      // Safari will not speak later unless synthesis is touched during a real
+      // user gesture, so warm it up here on the click, before any await.
+      if(window.primeSpeech)window.primeSpeech();
+      const AC=window.AudioContext||window.webkitAudioContext; audioContext=new AC();
+      if(audioContext.state==='suspended')await audioContext.resume();
+      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      analyser=audioContext.createAnalyser(); analyser.fftSize=256;
+      audioContext.createMediaStreamSource(stream).connect(analyser);
+      dataArray=new Uint8Array(analyser.frequencyBinCount);
+      isAudioActive=true;
+      document.getElementById('start-btn')?.classList.add('hidden');
+      const sc=document.getElementById('status-corner');
+      if(sc)sc.innerHTML='SYSTEM_ONLINE<br>LISTENING_MODE';
+      setSkyeText("I'M LISTENING...");
+      if(window.startVoice)window.startVoice();
+    }catch(e){
+      // Report what actually failed. This used to say "access denied" for every
+      // error, including missing devices and insecure contexts.
+      console.error('initAudio failed:', e);
+      const why = {
+        NotAllowedError:'Permission was refused. Check the browser site permission AND macOS System Settings > Privacy & Security > Microphone.',
+        NotFoundError:'No microphone was found on this machine.',
+        NotReadableError:'The microphone is in use by another app.',
+        SecurityError:'Blocked: the page is not in a secure context (use http://localhost, not a LAN IP).'
+      }[e.name] || e.message;
+      alert('Microphone unavailable ('+e.name+').\n\n'+why+
+            '\n\nNote: this only animates the orb. Voice chat is clients/client.py.');
+      document.getElementById('start-btn').textContent='AUDIO UNAVAILABLE';
+    }
+  };
+  function getVolume(){
+    if(!isAudioActive)return 0;
+    analyser.getByteFrequencyData(dataArray);
+    let s=0; for(let i=0;i<dataArray.length;i++)s+=dataArray[i];
+    return(s/dataArray.length)/100;
+  }
+
+  // ── ANIMATION ──
+  let time=0;
+  function animate(){
+    requestAnimationFrame(animate); time+=0.008;
+    const lf=0.05;
+    activeMaterials.primary.forEach(m=>m.color.lerp(currentTarget.primary,lf));
+    activeMaterials.secondary.forEach(m=>m.color.lerp(currentTarget.secondary,lf));
+    activeMaterials.atmosphere.forEach(m=>m.color.lerp(currentTarget.atmosphere,lf));
+    scene.fog.color.lerp(new THREE.Color(currentTarget.fog),lf);
+    const vol=getVolume();
+    const ts=70+(vol*50),cs=glowSprite.scale.x; glowSprite.scale.set(cs+(ts-cs)*.1,cs+(ts-cs)*.1,1); glowMat.opacity=0.4+(vol*0.6);
+    shellGroup.rotation.x=Math.sin(time*.5)*.1; shellGroup.rotation.z=Math.cos(time*.3)*.1;
+    if(vol>.1){shellGroup.rotation.x+=(Math.random()-.5)*vol*.1;shellGroup.rotation.y+=(Math.random()-.5)*vol*.1;}
+    shellGroup.scale.setScalar(1+(vol*.1));
+    const bs=0.005+(vol*.05); brain1.rotation.y+=bs; brain1.rotation.z-=0.002; brain2.rotation.x-=0.003;
+    brain1.scale.setScalar(1+(vol*.2)); brain2.scale.setScalar(1+(vol*.15));
+    layers.forEach(l=>{const ws=1+(vol*10),w=Math.sin(time*ws-(l.userData.index*.3)),inten=(w+1)*.5;l.material.opacity=l.userData.baseOpacity+(vol*.5)+(inten*(l.userData.maxOpacity-l.userData.baseOpacity));l.scale.setScalar(1+(vol*(l.userData.index*.1)));});
+    gimbalPivot.rotation.x=Math.cos(time*.1)*1; gimbalPivot.rotation.y+=0.004; gimbalPivot.rotation.z+=0.002;
+    gimbalPivot2.rotation.x=Math.sin(time*.1)*1.5; gimbalPivot2.rotation.y+=0.003; gimbalPivot2.rotation.z+=0.002;
+    const updateSegs=(segs,off)=>segs.forEach(s=>{let tr=s.userData.radius;const ni=s.userData.index/(s.userData.total-1),mm=Math.pow(Math.sin(ni*Math.PI),10),sp=time*(60+(vol*50)),amp=vol*6,wv=Math.sin(sp-s.userData.index*.5+off);if(mm>.01)tr+=wv*mm*amp;s.userData.currentRadius+=(tr-s.userData.currentRadius)*.2;const r=s.userData.currentRadius;s.position.x=Math.cos(s.userData.midAngle)*(r-s.userData.radius);s.position.y=Math.sin(s.userData.midAngle)*(r-s.userData.radius);});
+    updateSegs(gimbalSegments1,0); updateSegs(gimbalSegments2,10);
+    activeBeams.forEach(b=>{if(b.userData.active){b.userData.life++;const p=b.userData.life/b.userData.targetLife;b.material.opacity=p<.15?p*6:(1-p)*.8;if(p>=1){b.userData.active=false;b.material.opacity=0;}}else if(Math.random()>.97-vol*.1)spawnBeam(b);});
+    renderer.render(scene,camera);
+  }
+  window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
+  animate();
+</script>
+
+<script>
+  // ── WEBSOCKET Q&A ──
+  const WS_URL='ws://localhost:8765';
+  const qaQ=document.getElementById('qa-q');
+  const qaA=document.getElementById('qa-a');
+  const input=document.getElementById('msg-input');
+  const sendBtn=document.getElementById('send-btn');
+  const dot=document.getElementById('dot');
+  const statusT=document.getElementById('status-text');
+  let ws,waiting=false;
+
+  input.addEventListener('input',()=>{
+    input.style.height='auto';
+    input.style.height=Math.min(input.scrollHeight,60)+'px';
+  });
+
+  function connect(){
+    ws=new WebSocket(WS_URL);
+    ws.onopen=()=>{dot.classList.add('online');statusT.textContent='ONLINE';};
+    ws.onclose=()=>{dot.classList.remove('online');statusT.textContent='OFFLINE';setTimeout(connect,3000);};
+    ws.onerror=()=>ws.close();
+    let streamed='';
+    ws.onmessage=(e)=>{
+      let msg;
+      try{msg=JSON.parse(e.data);}catch(err){return;}
+
+      if(msg.type==='start'){
+        streamed='';
+        qaA.style.display='block';
+        qaA.className='qa-answer';
+        qaA.textContent='';
+        if(window.setSkyeText)window.setSkyeText('RESPONDING');
+      }
+      else if(msg.type==='token'){
+        streamed+=msg.text;
+        qaA.textContent=streamed;
+      }
+      else if(msg.type==='tool'){
+        qaA.textContent='['+msg.name+']';
+        if(window.setSkyeText)window.setSkyeText('EXECUTING');
+      }
+      else if(msg.type==='done'){
+        qaA.textContent=msg.text;
+        void qaA.offsetWidth;
+        qaA.className='qa-answer';
+        waiting=false;
+        sendBtn.disabled=false;
+        if(window.setSkyeText)window.setSkyeText('');
+        speak(msg.text);
+      }
+      else if(msg.type==='error'){
+        qaA.textContent='[error] '+msg.message;
+        waiting=false;
+        sendBtn.disabled=false;
+      }
+    };
+  }
+  connect();
+
+  function showTyping(){
+    qaA.style.display='block';
+    qaA.innerHTML='<span class="typing-dots"><span></span><span></span><span></span></span>';
+  }
+
+  function send(){
+    const text=input.value.trim();
+    if(!text||waiting||ws.readyState!==WebSocket.OPEN)return;
+
+    // Show question
+    qaQ.style.display='block';
+    void qaQ.offsetWidth; // re-trigger animation
+    qaQ.className='qa-question';
+    qaQ.textContent=text;
+
+    // Clear answer while waiting
+    qaA.textContent='';
+    showTyping();
+
+    if(window.setSkyeText)window.setSkyeText('PROCESSING...');
+    ws.send(text);
+    input.value='';
+    input.style.height='auto';
+    waiting=true;
+    sendBtn.disabled=true;
+  }
+
+  // ── VOICE: speech in, speech out ───────────────────────────────────────
+  // Speech synthesis is on-device. Speech RECOGNITION is not: the browser
+  // streams microphone audio to Apple/Google. Same trade clients/client.py
+  // already made with recognize_google().
+  //
+  // The wake word is OPTIONAL: anything you say becomes a query, and saying
+  // "Skye" first simply strips it. Background speech is therefore also sent,
+  // so "stop listening" exists as a spoken off switch.
+  const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski)\b[\s,.!?-]*/i;
+  const CANCEL=/^\s*(?:scratch that|never ?mind|forget it|ignore that|cancel(?: that)?)\s*[.!?]*\s*$/i;
+  const STOP=/^\s*(?:(?:skye|sky)[\s,]*)?(?:stop listening|stop the mic|go to sleep|mute yourself)\s*[.!?]*\s*$/i;
+  const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
+  const COMMIT_MS=1400;   // silence after speech before it is sent
+
+  let recog=null,recogWanted=false,speaking=false,asleep=false;
+  let pending='',commitTimer=null,previewOn=false;
+  // While asleep the microphone stays LIVE and audio still reaches Apple; the
+  // only difference is that nothing but the wake word is acted on.
+  const WAKE_ONLY=/^(?:wake up|wake|you there|are you there|hello|hey)$/i;
+
+  function vstatus(t){ if(window.setSkyeText)window.setSkyeText(t); }
+
+  // ---- reply voice: FRIDAY (Iron Man) is Kerry Condon, i.e. Irish, so the
+  // ---- target is an en-IE female voice. Moira is the macOS one. Falls back
+  // ---- to en-GB and then en-US rather than going silent.
+  const VOICE_PREFS=['Moira','Fiona','Siobhan','Karen','Serena','Samantha'];
+  let chosenVoice=null;
+  function pickVoice(){
+    if(!('speechSynthesis' in window))return;
+    const vs=speechSynthesis.getVoices();
+    if(!vs.length)return;                    // populated asynchronously
+    for(const name of VOICE_PREFS){
+      const v=vs.find(x=>x.name===name)||vs.find(x=>x.name.startsWith(name));
+      if(v){ chosenVoice=v; return; }
+    }
+    chosenVoice=vs.find(v=>/^en[-_]IE/i.test(v.lang))
+              ||vs.find(v=>/^en[-_]GB/i.test(v.lang))
+              ||vs.find(v=>/^en[-_]US/i.test(v.lang))
+              ||vs.find(v=>/^en/i.test(v.lang))||null;
+  }
+  if('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged=pickVoice; }
+
+  window.primeSpeech=function(){
+    if(!('speechSynthesis' in window))return;
+    try{ const w=new SpeechSynthesisUtterance(' '); w.volume=0; speechSynthesis.speak(w); }catch(e){}
+    pickVoice();
+  };
+
+  function speak(text){
+    if(!text||!('speechSynthesis' in window))return;
+    // Stop listening first, or the mic hears SKYE and re-triggers on her own voice.
+    speaking=true;
+    if(recog){ try{recog.stop();}catch(e){} }
+    const u=new SpeechSynthesisUtterance(text);
+    if(!chosenVoice)pickVoice();
+    if(chosenVoice)u.voice=chosenVoice;
+    u.lang=(chosenVoice&&chosenVoice.lang)||'en-IE';
+    u.rate=1.08; u.pitch=1.0;
+    const resume=()=>{ speaking=false; if(recogWanted)startRecognition(); };
+    u.onend=resume; u.onerror=resume;
+    try{ speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){ resume(); }
+  }
+
+  // ---- false-start trimming ----
+  // "dynamic vector dynamic array is vector" -> "dynamic array is vector".
+  // Only the opening few words are searched, so a genuine later repeat
+  // ("the sky is blue and the sky is grey") is left intact.
+  function trimFalseStart(text){
+    const w=text.split(/\s+/);
+    if(w.length<4)return text;
+    const norm=x=>x.toLowerCase().replace(/[^a-z0-9]/g,'');
+    const first=norm(w[0]);
+    if(!first)return text;
+    let cut=0;
+    for(let i=2;i<Math.min(w.length,5);i++){ if(norm(w[i])===first)cut=i; }
+    return cut?w.slice(cut).join(' '):text;
+  }
+
+  function showPreview(t){
+    if(asleep)return;              // ambient speech must not fill the input box
+    if(!t&&!previewOn)return;      // never clobber something typed by hand
+    previewOn=!!t;
+    input.value=t;
+    input.style.height='auto';
+    input.style.height=Math.min(input.scrollHeight,60)+'px';
+  }
+
+  function scheduleCommit(){
+    if(commitTimer)clearTimeout(commitTimer);
+    commitTimer=setTimeout(commitSpeech,COMMIT_MS);
+  }
+
+  function commitSpeech(){
+    commitTimer=null;
+    let text=pending.trim();
+    pending=''; showPreview('');
+    if(!text)return;
+
+    // Asleep: ignore everything that is not the wake word.
+    if(asleep){
+      const m=text.match(WAKE);
+      if(!m)return;
+      asleep=false;
+      vstatus('LISTENING');
+      const rest=text.slice(m[0].length).trim();
+      speak('Yes?');
+      if(rest&&!WAKE_ONLY.test(rest)&&rest.replace(/[^a-z0-9]/gi,'').length>=3&&!waiting){
+        input.value=trimFalseStart(rest); previewOn=false; send();
+      }
+      return;
+    }
+
+    if(STOP.test(text)){
+      asleep=true; pending=''; showPreview('');
+      vstatus('SLEEPING - SAY "SKYE"');
+      return;
+    }
+    if(CANCEL.test(text)){ vstatus('CANCELLED'); return; }
+
+    text=text.replace(WAKE,'').trim();                   // wake word optional
+    text=trimFalseStart(text);
+    // Drop stray noise and single filler words picked up between sentences.
+    if(text.replace(/[^a-z0-9]/gi,'').length<3)return;
+    if(!/\s/.test(text)&&FILLER.test(text.replace(/[^a-z0-9]/gi,'')))return;
+    if(waiting){ vstatus('BUSY - ONE MOMENT'); return; }
+
+    input.value=text; previewOn=false;
+    send();
+  }
+
+  window.startVoice=function(){ recogWanted=true; asleep=false; startRecognition(); };
+  window.stopVoice=function(){ recogWanted=false; if(recog){ try{recog.abort();}catch(e){} } vstatus('MIC OFF'); };
+
+  function startRecognition(){
+    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+    if(!SR){ vstatus('SPEECH RECOGNITION UNSUPPORTED'); recogWanted=false; return; }
+    if(recog){ try{recog.abort();}catch(e){} }
+    recog=new SR();
+    recog.continuous=true;
+    recog.interimResults=true;   // show what is heard, so a misspeak is visible
+    recog.lang='en-IN';          // how YOU speak; the reply voice is separate
+    recog.onresult=(e)=>{
+      let fin='',interim='';
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        const r=e.results[i];
+        if(r.isFinal)fin+=r[0].transcript; else interim+=r[0].transcript;
+      }
+      if(fin)pending=(pending?pending+' ':'')+fin.trim();
+      showPreview(((pending?pending+' ':'')+interim.trim()).trim());
+      scheduleCommit();
+    };
+    recog.onerror=(e)=>{
+      console.warn('recognition error:',e.error);
+      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
+        recogWanted=false; vstatus('SPEECH RECOGNITION BLOCKED');
+      }
+    };
+    // Recognition self-terminates on silence; restart unless SKYE is talking.
+    recog.onend=()=>{ if(recogWanted&&!speaking){ try{recog.start();}catch(e){} } };
+    try{ recog.start(); vstatus('LISTENING'); }catch(e){ console.warn(e); }
+  }
+
+  sendBtn.addEventListener('click',send);
+  input.addEventListener('keydown',(e)=>{
+    if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send();}
+  });
+</script>
+</body>
+</html>

@@ -3,4 +3,10 @@
 logs
 .vscode
 SKYE
-prepared_data_mlx
+
+# OS / editor cruft
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc

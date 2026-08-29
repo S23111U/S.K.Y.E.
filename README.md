@@ -3,7 +3,7 @@
 # S.K.Y.E.
 ### Sophisticated Knowledge Yielding Entity
 
-*An autonomous, self-learning AI assistant built natively on Apple Silicon*
+*A private, locally-run AI assistant built natively on Apple Silicon*
 
 ![Architecture](assets/architecture.png)
 
@@ -16,7 +16,7 @@
 
 ---
 
-S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine built on **Meta Llama-3 8B** that continuously learns from its own mistakes, remembers everything you discuss, and evolves its personality overnight — all without sending a single byte of data to the cloud.
+S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine built on **Meta Llama-3 8B** that remembers everything you discuss, calls real tools, and holds a consistent personality — all without sending a single byte of data to the cloud.
 
 ---
 
@@ -28,64 +28,63 @@ S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine b
 | 🌤️ Live Weather | ✅ Live |
 | 📰 News Summarisation | ✅ Live |
 | ⏰ Alarms & Reminders | ✅ Live |
-| 🧠 Internal Reasoning (Test-Time Compute) | ✅ Live |
-| 🎭 Dynamic Tone & Verbosity (DPO) | ✅ Live |
+| 🎭 Consistent Persona (system prompt) | ✅ Live |
 | 💾 3-Layer Hybrid Memory (RAG) | ✅ Live |
-| ⚙️ Nightly Autonomous Self-Training | ✅ Live |
-| 🔄 Zero-Downtime Hot-Swapping | ✅ Live |
+| 🌙 Nightly Memory Consolidation | ✅ Live |
+| 🛡️ Runtime Guardrails | ✅ Live |
 
 ---
 
-## 🏛️ The Three Pillars of Self-Learning
+## 🏛️ Architecture
 
-S.K.Y.E.'s intelligence is built on three autonomous pillars that collectively eliminate the need for manual retraining.
+S.K.Y.E. runs the **stock 4-bit Llama-3 8B Instruct** model. No fine-tuned weights, no adapters. Everything that makes her *her* lives in three places.
 
-### Pillar 1 — Cognitive Reasoning (Test-Time Compute)
-S.K.Y.E. uses a structured internal monologue at generation time. Before every response, she silently reasons through a chain of thought — the user never sees this, only the polished outcome.
+### 1 — Persona (System Prompt)
+
+Personality, tone and the tool-calling contract are defined in a single file: [`prompts/skye_persona.txt`](prompts/skye_persona.txt). It is loaded at startup and prepended to every conversation as the system message.
+
+This replaced an earlier approach that baked personality into fine-tuned LoRA weights. The prompt is deliberately terse — every token in it is paid for on every single turn, so it has been tuned for size as well as behaviour.
+
+### 2 — Tools
+
+When the persona decides a request needs real data, the model emits a single line:
 
 ```
-<draft>   → First-pass reasoning                (hidden from user)
-<critique>→ Self-correction of the draft        (hidden from user)
-<final_answer> → The clean, delivered response  (visible)
+CALL_FUNC: {"name": "tell_time", "arguments": {}}
 ```
 
-This natively eliminates hallucinations and prevents robotic, template-driven replies.
+`core_v2.py` parses that, dispatches to the registered Python function, and feeds the result back into the next turn as a system note. A blocklist rejects anything destructive before dispatch.
 
-### Pillar 2 — Dynamic Tone & Length (DPO Self-Correction)
-The nightly pipeline automatically scans production telemetry for turns where Python guardrails were triggered (e.g. verbosity truncation, repetition loops). It converts each failure into a preference training pair and fine-tunes the LoRA adapters using MLX on-device — so S.K.Y.E. learns the *correct* tone natively, making the Python fallbacks increasingly redundant.
+### 3 — Hybrid RAG Memory (3-Layer)
 
-### Pillar 3 — Hybrid RAG Memory (3-Layer Architecture)
-S.K.Y.E. has a persistent, hierarchical memory that survives across sessions:
+A persistent, hierarchical memory that survives across sessions:
 
 | Tier | Storage | Role |
 |---|---|---|
-| **1 — Short Term** | Active `SHARED_MESSAGES` list | Current conversation context (2,048 tokens) |
-| **2 — Long Term Semantics** | SQLite + `sentence-transformers` Vector DB | Semantic search over all historical conversations |
+| **1 — Short Term** | Active `SHARED_MESSAGES` list | System message + last 6 turns |
+| **2 — Long Term Semantics** | SQLite + `sentence-transformers` vector store | Semantic search over all historical conversations |
 | **3 — Persistent Profile** | `memory/persistent_profile.json` | Structured facts: your name, preferences, habits |
 
-On every message, S.K.Y.E. runs a **Hybrid Search** (70% vector cosine similarity + 30% keyword boost) over Tier 2 and injects the top-3 most relevant past memories directly into her system prompt before generating a response.
+On every message, S.K.Y.E. runs a **hybrid search** (70% vector cosine similarity + 30% keyword boost) over Tier 2 and injects the top-3 memories into the system prompt. Results below a relevance floor are discarded rather than padding the prompt with noise, and a `UNIQUE` index on content keeps the store free of duplicates.
 
 ---
 
-## 🤖 Autonomous MLOps Pipeline
+## 🌙 Nightly Memory Consolidation
 
-The full self-improvement cycle runs via a single command (or a scheduled Cron job):
+Memory consolidation runs via a single command (or a scheduled Cron job):
 
 ```bash
 python scripts/nightly_agi_cron.py
 ```
 
-The 5-phase pipeline runs sequentially:
+Two phases run sequentially:
 
 ```
-Phase 1 │ Fact Extraction          → proposed_facts.py         → updates memory/persistent_profile.json
-Phase 2 │ Semantic Ingestion       → ingest_history.py         → indexes logs into memory/semantics.db
-Phase 3 │ Dataset Synthesis        → auto_log_to_dpo.py        → converts failures → training pairs
-Phase 4 │ On-Device Training       → python -m mlx_lm.lora     → fine-tunes SKYE/ LoRA adapters
-Phase 5 │ Zero-Downtime Hot-Swap   → .reload_model_signal      → reloads weights in RAM live
+Phase 1 │ Fact Extraction      → proposed_facts.py   → updates memory/persistent_profile.json
+Phase 2 │ Semantic Ingestion   → ingest_history.py   → indexes logs into memory/semantics.db
 ```
 
-The production server detects the signal file and reloads the adapter weights into Unified Memory using a `threading.Lock()` — zero dropped connections.
+> **Note:** this pipeline previously had three further phases that generated DPO pairs from guardrail failures, fine-tuned LoRA adapters on-device, and hot-swapped the weights into the running server. That loop treated the assistant's own failures as correct training targets and progressively degraded the model. It has been removed. S.K.Y.E. learns *facts* overnight, not weights.
 
 ---
 
@@ -95,29 +94,29 @@ The production server detects the signal file and reloads the adapter weights in
 jarvis/
 │
 ├── core/
-│   ├── core_v2.py              # Main production engine (Socket Server + CLI)
-│   └── chat_skye.py            # Alternative lightweight CLI interface
+│   └── core_v2.py              # Main production engine (Socket Server + CLI)
 │
-├── data/
-│   ├── build_dataset.py        # [Pillar 1] Initial SFT dataset builder
-│   ├── build_dpo_dataset_pillar2.py  # [Pillar 2] DPO preference dataset generator
-│   └── auto_log_to_dpo.py      # [Pillar 2] Autonomous failure-to-training-data converter
+├── prompts/
+│   └── skye_persona.txt        # The personality. Loaded as the system message.
 │
 ├── scripts/
-│   ├── nightly_agi_cron.py     # Master autonomous MLOps orchestrator
-│   └── ingest_history.py       # [Pillar 3] Semantic log ingestor
+│   ├── nightly_agi_cron.py     # Nightly memory consolidation orchestrator
+│   ├── ingest_history.py       # Semantic log ingestor (Tier 2)
+│   └── clean_memory.py         # One-time semantics.db dedupe/cleanup
 │
 ├── memory/
+│   ├── manager.py              # MemoryManager: hybrid vector + keyword search
 │   ├── semantics.db            # SQLite vector store (Tier 2 - generated)
 │   ├── persistent_profile.json # Structured user facts (Tier 3 - generated)
 │   └── short-term/
-│       └── proposed_facts.py   # [Pillar 3] LLM-powered fact extractor
+│       └── proposed_facts.py   # LLM-powered fact extractor
+│
+├── clients/
+│   ├── browser.py              # HTTP + WebSocket bridge to the socket server
+│   └── browser.html            # Browser UI
 │
 ├── helper_functions/           # Tool implementations (weather, news, alarms...)
-├── SKYE/                       # Trained LoRA adapters (gitignored)
-├── logs/                       # Session telemetry JSONL files (gitignored)
-├── training_config.json        # MLX LoRA training hyperparameters
-└── test_raw.py                 # Raw inference test script
+└── logs/                       # Session telemetry JSONL files (gitignored)
 ```
 
 ---
@@ -154,13 +153,13 @@ python core/core_v2.py
 ```
 Select **[1]** for an interactive terminal session or **[2]** to expose a Socket Server on port `12345`.
 
-### 5. Trigger Autonomous Learning
-After your first conversation session, run the overnight pipeline to let S.K.Y.E. learn from the session:
+### 5. Consolidate Memory
+After a conversation session, run the overnight pipeline so S.K.Y.E. remembers it:
 ```bash
 python scripts/nightly_agi_cron.py
 ```
 
-> **Tip**: To make this fully autonomous, add this to your Mac's Crontab (runs at 3 AM nightly):
+> **Tip**: To make this automatic, add this to your Mac's Crontab (runs at 3 AM nightly):
 > ```
 > 0 3 * * * cd /path/to/jarvis && /path/to/envs/jarvis-py311/bin/python scripts/nightly_agi_cron.py
 > ```
@@ -171,19 +170,19 @@ python scripts/nightly_agi_cron.py
 
 | Component | Technology |
 |---|---|
-| **Base LLM** | `mlx-community/Meta-Llama-3-8B-Instruct-4bit` |
-| **Training Framework** | `mlx-lm` (Apple Silicon native) |
-| **Adapter Type** | LoRA (rank 16, 16 trainable layers) |
+| **Base LLM** | `mlx-community/Meta-Llama-3-8B-Instruct-4bit` (stock, no adapters) |
+| **Inference** | `mlx-lm` (Apple Silicon native) |
+| **Personality** | System prompt — `prompts/skye_persona.txt` |
 | **Embedding Model** | `all-MiniLM-L6-v2` (sentence-transformers) |
 | **Vector Store** | SQLite + NumPy cosine similarity |
-| **Concurrency** | `threading.Lock()` for hot-swap safety |
+| **Concurrency** | `threading.Lock()` serialises generation across socket clients |
 | **Telemetry** | JSONL session logs with guardrail annotations |
 
 ---
 
 ## 🛡️ Guardrail System
 
-S.K.Y.E. has a layered defence against common LLM failure modes, operating as a runtime fail-safe *until* the neural training makes them obsolete:
+A layered runtime defence against common LLM failure modes. Every guardrail that fires is printed as `[guardrails fired: ...]` and recorded in the session telemetry.
 
 | Guardrail | Trigger | Action |
 |---|---|---|
@@ -192,6 +191,10 @@ S.K.Y.E. has a layered defence against common LLM failure modes, operating as a 
 | `verbosity_truncate` | Response > 200 words or > 8 sentences | Truncate to 8 sentences |
 | `personality_dampen` | Over-saturation of butler tokens (`Sir`, `Certainly`) | Suppress excess tokens |
 | `low_info_suppression` | Filler phrases detected multiple times | Deduplicate |
+
+Ahead of these, `sanitise_raw()` strips malformed tool calls, dangling JSON and status filler from the raw output.
+
+Several of these were written to compensate for the removed fine-tune and may now be unreachable. They are being kept under observation and retired on logged evidence rather than on inspection.
 
 ---
 

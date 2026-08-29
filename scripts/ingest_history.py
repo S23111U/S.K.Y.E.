@@ -7,7 +7,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
 
-from core.core_v2 import MemoryManager
+from memory.manager import MemoryManager
 
 # =========================================================
 # [PILLAR 3: SEMANTIC INGESTOR]
