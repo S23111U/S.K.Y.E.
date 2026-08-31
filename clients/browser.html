@@ -299,7 +299,9 @@
       if(window.primeSpeech)window.primeSpeech();
       const AC=window.AudioContext||window.webkitAudioContext; audioContext=new AC();
       if(audioContext.state==='suspended')await audioContext.resume();
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      const stream=await navigator.mediaDevices.getUserMedia({audio:{
+        echoCancellation:true, noiseSuppression:true, autoGainControl:true
+      }});
       analyser=audioContext.createAnalyser(); analyser.fftSize=256;
       audioContext.createMediaStreamSource(stream).connect(analyser);
       dataArray=new Uint8Array(analyser.frequencyBinCount);
@@ -493,19 +495,51 @@
     pickVoice();
   };
 
+  // What SKYE is currently saying, so her own voice leaking into the mic can
+  // be told apart from the user actually interrupting.
+  let spokenText='';
+
+  function stopSpeaking(){
+    speaking=false; spokenText='';
+    try{ speechSynthesis.cancel(); }catch(e){}
+  }
+
+  // Echo guard: recognition runs during playback so the user can barge in,
+  // which means SKYE's own words can come back through the microphone.
+  function isEcho(heard){
+    if(!spokenText)return false;
+    const n=x=>x.toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
+    const h=n(heard), said=n(spokenText);
+    if(!h)return true;
+    if(said.includes(h))return true;
+    const hw=h.split(' ').filter(w=>w.length>3);
+    if(hw.length<2)return false;
+    return hw.filter(w=>said.includes(w)).length/hw.length>0.6;
+  }
+
   function speak(text){
     if(!text||!('speechSynthesis' in window))return;
-    // Stop listening first, or the mic hears SKYE and re-triggers on her own voice.
-    speaking=true;
-    if(recog){ try{recog.stop();}catch(e){} }
-    const u=new SpeechSynthesisUtterance(text);
     if(!chosenVoice)pickVoice();
-    if(chosenVoice)u.voice=chosenVoice;
-    u.lang=(chosenVoice&&chosenVoice.lang)||'en-IE';
-    u.rate=1.08; u.pitch=1.0;
-    const resume=()=>{ speaking=false; if(recogWanted)startRecognition(); };
-    u.onend=resume; u.onerror=resume;
-    try{ speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){ resume(); }
+    // One utterance per sentence, so delivery varies instead of arriving as a
+    // single flat block. The Web Speech API exposes no SSML, so rate and pitch
+    // are the only handles available.
+    const parts=(text.match(/[^.!?]+[.!?]*/g)||[text]).map(x=>x.trim()).filter(Boolean);
+    speaking=true; spokenText=text;
+    try{ speechSynthesis.cancel(); }catch(e){}
+    parts.forEach((part,i)=>{
+      const u=new SpeechSynthesisUtterance(part);
+      if(chosenVoice)u.voice=chosenVoice;
+      u.lang=(chosenVoice&&chosenVoice.lang)||'en-IE';
+      const question=/\?\s*$/.test(part);
+      const long=part.split(/\s+/).length>18;
+      u.rate=1.08+(question?-0.04:0)+(long?-0.03:0)+((i%2)?0.02:-0.02);
+      u.pitch=1.0+(question?0.10:0)+((i%2)?0.03:-0.02);
+      if(i===parts.length-1){
+        const done=()=>{ speaking=false; spokenText=''; if(recogWanted&&!asleep)vstatus('LISTENING'); };
+        u.onend=done; u.onerror=done;
+      }
+      try{ speechSynthesis.speak(u); }catch(e){ speaking=false; spokenText=''; }
+    });
   }
 
   // ---- false-start trimming ----
@@ -592,6 +626,14 @@
         const r=e.results[i];
         if(r.isFinal)fin+=r[0].transcript; else interim+=r[0].transcript;
       }
+      // Barge-in: if SKYE is talking and this is not her own voice echoing
+      // back, cut her off and treat it as the user taking the floor.
+      if(speaking){
+        const probe=(fin||interim).trim();
+        if(!probe||isEcho(probe))return;
+        stopSpeaking();
+        vstatus('LISTENING');
+      }
       if(fin)pending=(pending?pending+' ':'')+fin.trim();
       showPreview(((pending?pending+' ':'')+interim.trim()).trim());
       scheduleCommit();
@@ -602,8 +644,9 @@
         recogWanted=false; vstatus('SPEECH RECOGNITION BLOCKED');
       }
     };
-    // Recognition self-terminates on silence; restart unless SKYE is talking.
-    recog.onend=()=>{ if(recogWanted&&!speaking){ try{recog.start();}catch(e){} } };
+    // Recognition self-terminates on silence. Always restart: it now stays up
+    // during playback so the user can interrupt.
+    recog.onend=()=>{ if(recogWanted){ try{recog.start();}catch(e){} } };
     try{ recog.start(); vstatus('LISTENING'); }catch(e){ console.warn(e); }
   }
 
