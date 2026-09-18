@@ -2,7 +2,7 @@
 .venv
 logs
 .vscode
-SKYE
+.claude
 
 # OS / editor cruft
 .DS_Store

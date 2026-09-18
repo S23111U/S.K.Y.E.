@@ -2,27 +2,44 @@ import os
 import sys
 import re
 import json
+import base64
+import glob
+import importlib.util
+import platform
+import random
 import socket
+import subprocess
 import threading
 import time
 import webbrowser
-import wikipedia
 import asyncio
-from datetime import datetime
+from contextlib import AsyncExitStack
+from datetime import datetime, timedelta
+import mlx.core as mx
 from mlx_lm import load, stream_generate
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
 
-from helper_functions.current_time import TellTime
-from helper_functions.weather import Get_Info
-from helper_functions.set_alarm import set_alarm
-from helper_functions.set_reminder import set_reminder
-from helper_functions.GenAI import GenAI_search
+from plyer import notification
 from helper_functions.greet import Greetings
-from helper_functions.news import fetch_news_summary
 from clients.browser import start_http_server, open_browser, start_ws_server
-from core.protocol import frame
+from core.protocol import frame, FrameReader
+from core import stt
+from core import tts
+from scripts.ingest_history import ingest_all_logs
+from memory.tasks import format_due
+
+# `memory/short-term/` has a hyphen, so it can't be a normal dotted import
+# target (`memory.short-term` isn't valid Python syntax) — loaded by file
+# path instead. Only its `run_fact_extraction` function is used here.
+_proposed_facts_spec = importlib.util.spec_from_file_location(
+    "proposed_facts", os.path.join(ROOT, "memory", "short-term", "proposed_facts.py")
+)
+proposed_facts = importlib.util.module_from_spec(_proposed_facts_spec)
+_proposed_facts_spec.loader.exec_module(proposed_facts)
 
 # =========================================================
 # SYSTEM CONFIG & PATHS
@@ -51,13 +68,28 @@ TURN_INDEX = 0
 TELEMETRY_FILE = os.path.join(LOG_DIR, f"telemetry_{SESSION_ID}.jsonl")
 MODEL_LOCK = threading.Lock()
 
+# Connections currently open, so the scheduler thread can push a proactive
+# check-in to whatever browser tab(s) are live without one having just sent
+# a message — see _broadcast_proactive() and handle_client().
+ACTIVE_CONNECTIONS = []
+ACTIVE_CONNECTIONS_LOCK = threading.Lock()
+
+# MLX streams are thread-local (mlx >= 0.31.2) — a stream created on one
+# thread cannot be used from another. Since every client connection is
+# handled on its own thread (see handle_client/start_server_mode), all MLX
+# work on that thread must run inside `with mx.stream(MLX_STREAM):`, which
+# transparently gives each calling thread its own valid stream.
+MLX_STREAM = mx.new_thread_local_stream(mx.default_device())
+
 
 # =========================================================
 # LONG-TERM MEMORY
 # =========================================================
 from memory.manager import MemoryManager
+from memory.tasks import TaskStore
 
 MEMORY = MemoryManager(ROOT)
+TASKS = TaskStore(ROOT)
 
 # =========================================================
 # GUARDRAIL CONFIG
@@ -115,6 +147,88 @@ ALWAYS_STRIP_PHRASES = [
 CALL_EXEC_PATTERN = re.compile(
     r"(CALL_FUNC|Executing function)\w*\s*[:\-]*\s*(.*)", re.DOTALL | re.IGNORECASE
 )
+
+
+# =========================================================
+# BACKCHANNEL FILLERS
+# =========================================================
+# Real conversation doesn't go silent while the other person thinks — a
+# quick "mm-hmm" or "let me check" fills the gap. LLM generation (plus, for
+# tool calls, the tool's own execution time) takes a second or more with
+# nothing spoken, which reads as a stall rather than a person listening.
+# stream_skye_response() emits a "filler" frame for handle_client() to speak
+# immediately, in a background thread, while the real reply is generated.
+#
+# Placement matters more than the phrases themselves: a coin-flip on every
+# turn produces fillers back-to-back one moment and none for five turns the
+# next, which reads as a tic, not a person. Real backchannel is driven by
+# (a) whether a pause is actually about to happen — a one-word "thanks" gets
+# answered instantly, a real question or a tool call doesn't — and (b) not
+# doing it again right after the last one. Both are checked below before the
+# phrase pool is even chosen.
+FILLER_ACK = ["Mm-hmm.", "I hear you.", "Right.", "Okay, go on.", "Got it."]
+FILLER_THINKING = [
+    "Hmm, let me check that.",
+    "One moment.",
+    "Let me look into that.",
+    "Give me a second.",
+]
+# Rough signal that the request will dispatch a tool (and so take longer than
+# a plain conversational reply) — not exhaustive, just enough to pick the
+# right tone of filler.
+FILLER_TOOL_HINTS = (
+    "weather", "news", "alarm", "remind", "search", "time",
+    "open ", "spotify", "youtube", "calendar",
+)
+QUESTION_LEAD_RE = re.compile(
+    r"^\s*(who|what|when|where|why|how|which|whose|is|are|was|were|do|does|did|"
+    r"can|could|would|will|should|has|have)\b",
+    re.IGNORECASE,
+)
+# A remark this short ("thanks", "okay then", "sounds good") gets answered
+# almost instantly — there's no gap for a filler to fill, so one would land
+# after the real reply instead of before it.
+FILLER_MIN_WORDS = 4
+# Minimum turns that must pass before a *conversational* filler can fire
+# again (tool-bound requests are exempt — those pauses are real every time).
+# This is what actually stops the "randomly appearing" feel: a filler at
+# every turn is a tic, one every third or so is closer to how backchannel
+# actually happens.
+FILLER_COOLDOWN_TURNS = 2
+
+_last_filler = None
+_last_filler_turn = -FILLER_COOLDOWN_TURNS
+
+
+def pick_filler(user_input: str):
+    """Returns a filler phrase to speak while the real reply is generated, or None."""
+    global _last_filler, _last_filler_turn
+
+    words = user_input.split()
+    lower = user_input.lower()
+    is_tool_like = any(hint in lower for hint in FILLER_TOOL_HINTS)
+    is_question = user_input.rstrip().endswith("?") or bool(QUESTION_LEAD_RE.match(user_input))
+
+    if not is_tool_like:
+        if len(words) < FILLER_MIN_WORDS:
+            return None
+        if TURN_INDEX - _last_filler_turn < FILLER_COOLDOWN_TURNS:
+            return None
+
+    if is_tool_like:
+        pool, probability = FILLER_THINKING, 1.0
+    elif is_question:
+        pool, probability = FILLER_THINKING, 0.6
+    else:
+        pool, probability = FILLER_ACK, 0.45
+
+    if random.random() > probability:
+        return None
+
+    choices = [f for f in pool if f != _last_filler] or pool
+    _last_filler = random.choice(choices)
+    _last_filler_turn = TURN_INDEX
+    return _last_filler
 
 
 # =========================================================
@@ -291,74 +405,245 @@ def save_telemetry(
 # =========================================================
 print("Loading SKYE...")
 with MODEL_LOCK:
-    model, tokenizer = load("mlx-community/Meta-Llama-3-8B-Instruct-4bit")
+    model, tokenizer = load("mlx-community/gemma-4-e4b-it-4bit")
     tokenizer.eos_token_ids = {
-        tokenizer.convert_tokens_to_ids("<|eot_id|>"),
-        tokenizer.convert_tokens_to_ids("<|end_of_text|>"),
+        tokenizer.convert_tokens_to_ids("<turn|>"),
+        tokenizer.convert_tokens_to_ids("<eos>"),
     }
+    # mlx's first-ever generation call bakes in some internal state (compiled
+    # kernels / cache templates) that isn't safely reusable across threads
+    # unless that first call happened on the main thread. Every real request
+    # runs stream_generate from a per-connection worker thread (handle_client),
+    # which crashes with "There is no Stream(gpu, N) in current thread"
+    # without this warmup.
+    _warmup_prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "hi"}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    for _ in stream_generate(model, tokenizer, prompt=_warmup_prompt, max_tokens=1):
+        pass
 print("✓ SKYE ONLINE\n")
 
 
 # =========================================================
-# TOOL REGISTRY
+# BACKGROUND SCHEDULER — nightly memory consolidation
 # =========================================================
-TOOLS = {}
+# Nothing outside this process ever scheduled `nightly_agi_cron.py` (no cron
+# entry, no launchd plist exists anywhere in the repo) — the fact-extraction
+# and semantic-ingestion pipeline it runs has simply never executed. Rather
+# than relying on an external scheduler firing at a fixed clock time (which
+# silently misses a whole day if the laptop is asleep or the server isn't
+# running then), a lightweight in-process thread checks once a minute
+# whether more than a day has passed since the last run, and if so runs it
+# there and then — resilient to the server being started at an arbitrary
+# time, at the cost of "once a day, whenever it's next up" rather than a
+# fixed hour.
+CONSOLIDATION_STATE_FILE = os.path.join(LOG_DIR, ".consolidation_state.json")
+CONSOLIDATION_INTERVAL = timedelta(hours=20)
+SCHEDULER_TICK_SECONDS = 60
 
 
-def register_tool(name, func):
-    TOOLS[name] = func
-
-
-register_tool("tell_time", lambda **kw: TellTime())
-register_tool(
-    "get_weather",
-    lambda **kw: Get_Info()[1] + ": " + str(Get_Info()[2]) + "°C, " + Get_Info()[3],
-)
-register_tool(
-    "set_alarm",
-    lambda **kw: threading.Thread(target=set_alarm, args=(kw.get("time"),), daemon=True)
-    or f"Alarm set for {kw.get('time')}.",
-)
-register_tool(
-    "set_reminder",
-    lambda **kw: threading.Thread(
-        target=set_reminder, args=(kw.get("time"), kw.get("task")), daemon=True
-    )
-    or f"Reminder set: {kw.get('task')} at {kw.get('time')}.",
-)
-register_tool("web_search", lambda **kw: wikipedia_summary_or_genai(kw.get("query")))
-register_tool("open_youtube", lambda **kw: web_open_and_ack("youtube", kw.get("query")))
-register_tool("open_spotify", lambda **kw: web_open_and_ack("spotify", kw.get("query")))
-register_tool("open_calendar", lambda **kw: web_open_and_ack("google", "calendar"))
-register_tool("fetch_news", lambda **kw: fetch_news_summary(kw.get("query")))
-
-
-def wikipedia_summary_or_genai(query):
-    if not query:
-        return "No query provided."
+def _consolidation_due() -> bool:
+    if not os.path.exists(CONSOLIDATION_STATE_FILE):
+        return True
     try:
-        return wikipedia.summary(query, sentences=2)
+        with open(CONSOLIDATION_STATE_FILE, "r") as f:
+            state = json.load(f)
+        last_run = datetime.fromisoformat(state["last_run"])
     except Exception:
-        return GenAI_search(query)
+        return True
+    return datetime.now() - last_run >= CONSOLIDATION_INTERVAL
 
 
-def web_open_and_ack(site_key, query=None):
-    sites = {
-        "youtube": "https://youtube.com",
-        "wikipedia": "https://wikipedia.com",
-        "google": "https://google.com",
-        "spotify": "https://open.spotify.com",
-    }
-    url = sites.get(site_key, "https://google.com")
-    if query:
-        if site_key == "youtube":
-            webbrowser.open(f"https://www.youtube.com/results?search_query={query}")
-            return f"Opening YouTube for {query}."
-        if site_key == "spotify":
-            webbrowser.open(f"https://open.spotify.com/search/{query}")
-            return f"Opening Spotify for {query}."
-    webbrowser.open(url)
-    return f"Opening {site_key}."
+def _mark_consolidation_ran():
+    with open(CONSOLIDATION_STATE_FILE, "w") as f:
+        json.dump({"last_run": datetime.now().isoformat()}, f)
+
+
+DIAGNOSTICS_FILE = os.path.join(LOG_DIR, "diagnostics.json")
+
+
+def _run_diagnostics_pass(log_files):
+    """Aggregates guardrail-trigger and tool success/failure counts from a
+    batch of telemetry files into a small running report.
+
+    Pure counting over data `save_telemetry()` already logs on every turn —
+    no LLM call, no change to the live turn path. Tool success/failure is
+    read from the same `"Apologies" in assistant_output` convention
+    `stream_skye_response()` already relies on elsewhere (for deciding
+    whether to keep a turn in SHARED_MESSAGES), rather than plumbing a new
+    explicit flag through call_function_safe().
+    """
+    report = {"guardrails": {}, "tools": {}, "turns_analyzed": 0, "total_words": 0, "total_sentences": 0}
+    if os.path.exists(DIAGNOSTICS_FILE):
+        try:
+            with open(DIAGNOSTICS_FILE, "r") as f:
+                report.update(json.load(f))
+        except Exception:
+            pass
+
+    for filename in log_files:
+        try:
+            with open(filename, "r") as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    report["turns_analyzed"] += 1
+                    for g in event.get("guardrails_triggered") or []:
+                        report["guardrails"][g] = report["guardrails"].get(g, 0) + 1
+                    stats = event.get("response_stats") or {}
+                    tool_name = stats.get("tool_dispatched")
+                    if tool_name:
+                        entry = report["tools"].setdefault(tool_name, {"success": 0, "failure": 0})
+                        if "Apologies" in (event.get("assistant_output") or ""):
+                            entry["failure"] += 1
+                        else:
+                            entry["success"] += 1
+                    report["total_words"] += stats.get("word_count", 0) or 0
+                    report["total_sentences"] += stats.get("sentence_count", 0) or 0
+        except Exception as e:
+            print(f"[Diagnostics ERROR]: Could not read {filename}: {e}")
+
+    with open(DIAGNOSTICS_FILE, "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"[Scheduler]: Diagnostics updated — {report['turns_analyzed']} turns analyzed (cumulative).")
+    return report
+
+
+def _run_daily_consolidation():
+    print("[Scheduler]: Running nightly memory consolidation...")
+    try:
+        # Captured before run_fact_extraction moves these files into
+        # processed_logs/, so diagnostics analyzes the same batch fact
+        # extraction just did.
+        log_files = glob.glob(os.path.join(LOG_DIR, "telemetry_*.jsonl"))
+        _run_diagnostics_pass(log_files)
+
+        with MODEL_LOCK, mx.stream(MLX_STREAM):
+            old_claims = proposed_facts.run_fact_extraction(model, tokenizer)
+        ingest_all_logs(memory=MEMORY)
+        # Superseding must happen AFTER ingestion, not before: ingest_all_logs
+        # re-embeds every dialogue pair in these same files unconditionally,
+        # including the turn where the now-wrong claim was originally stated —
+        # superseding it first would just have it silently reappear moments
+        # later from that same ingestion pass.
+        for claim in old_claims:
+            superseded_count = MEMORY.supersede_similar(claim)
+            print(f"[Scheduler]: Correction '{claim}' superseded {superseded_count} memory row(s).")
+
+        _mark_consolidation_ran()
+        print("[Scheduler]: Nightly memory consolidation complete.")
+    except Exception as e:
+        print(f"[Scheduler ERROR]: Nightly consolidation failed: {e}")
+
+
+def _notify_os(title: str, message: str):
+    """OS-level notification — the fallback that fires regardless of whether
+    a browser tab is even open (or asleep), so a time-critical alarm is never
+    silently missed just because no one's listening for voice.
+
+    plyer's macOS backend needs `pyobjus` (an Objective-C bridge that's
+    effectively unmaintained and frequently fails to build against current
+    macOS/Python), so macOS is handled directly via `osascript` instead —
+    it ships with every Mac, no extra dependency required. Windows keeps
+    using plyer, which is what this was originally written and run against.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
+        subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+    else:
+        notification.notify(title=title, message=message, app_name="SKYE", timeout=10)
+
+
+def _fire_due_tasks():
+    for task in TASKS.get_due():
+        message = task["description"]
+        print(f"[Scheduler]: Task due — {message}")
+        try:
+            _notify_os("SKYE", message)
+        except Exception as e:
+            print(f"[Scheduler ERROR]: OS notification failed: {e}")
+        _broadcast_proactive(message)
+        if task["recurrence"]:
+            TASKS.reschedule(task["id"])
+        else:
+            TASKS.mark_status(task["id"], "done")
+
+
+def _scheduler_loop():
+    while True:
+        if _consolidation_due():
+            _run_daily_consolidation()
+        _fire_due_tasks()
+        time.sleep(SCHEDULER_TICK_SECONDS)
+
+
+# =========================================================
+# TOOL EXECUTION — MCP client
+# =========================================================
+# Every tool used to be a plain Python function in an in-process `TOOLS`
+# dict, called directly by call_function_safe(). That dict is gone —
+# mcp_server/server.py now serves the exact same set of tools (faithfully
+# ported, see that file) over MCP, running as its own subprocess.
+#
+# MCP client sessions are async and need to stay alive for the life of the
+# stdio connection to that subprocess, but stream_skye_response()/
+# handle_client() are synchronous throughout (always have been — only
+# clients/browser.py's WS<->TCP bridge uses asyncio, for an unrelated
+# reason). Rather than convert the whole turn-handling path to async, one
+# dedicated background thread runs its own event loop for the life of the
+# process; call_mcp_tool() bridges a synchronous call site to it via
+# asyncio.run_coroutine_threadsafe(), the standard pattern for exactly this.
+MCP_SERVER_PATH = os.path.join(ROOT, "mcp_server", "server.py")
+TOOL_ROUTES = {}  # tool name -> ClientSession
+_mcp_loop = None
+_mcp_exit_stack = None
+
+
+async def _mcp_connect():
+    global _mcp_exit_stack
+    _mcp_exit_stack = AsyncExitStack()
+    server_params = StdioServerParameters(command=sys.executable, args=[MCP_SERVER_PATH])
+    read, write = await _mcp_exit_stack.enter_async_context(stdio_client(server_params))
+    session = await _mcp_exit_stack.enter_async_context(ClientSession(read, write))
+    await session.initialize()
+    tools = await session.list_tools()
+    for t in tools.tools:
+        TOOL_ROUTES[t.name] = session
+    print(f"[MCP] Connected to local tool server — {len(TOOL_ROUTES)} tools: {', '.join(TOOL_ROUTES)}")
+
+
+def start_mcp_bridge():
+    global _mcp_loop
+    _mcp_loop = asyncio.new_event_loop()
+
+    def _run_loop():
+        asyncio.set_event_loop(_mcp_loop)
+        _mcp_loop.run_forever()
+
+    threading.Thread(target=_run_loop, daemon=True).start()
+    # Block startup until the local tool server is actually up and
+    # list_tools() has populated TOOL_ROUTES — every mode (CLI and socket
+    # server) needs working tools from the moment it starts accepting input.
+    asyncio.run_coroutine_threadsafe(_mcp_connect(), _mcp_loop).result(timeout=30)
+
+
+def call_mcp_tool(name, arguments):
+    session = TOOL_ROUTES[name]
+
+    async def _call():
+        return await session.call_tool(name, arguments)
+
+    result = asyncio.run_coroutine_threadsafe(_call(), _mcp_loop).result(timeout=30)
+    text = result.content[0].text if result.content else None
+    if result.is_error:
+        raise RuntimeError(text or "unknown MCP tool error")
+    return text
 
 
 # =========================================================
@@ -414,15 +699,23 @@ def call_function_safe(name, args):
         return "Apologies, Sir. Could not detect a function."
     if name in SAFETY_BLOCKLIST:
         return f"Negative, Sir. `{name}` is not authorized."
-    fn = TOOLS.get(name)
-    if not fn:
+    if name not in TOOL_ROUTES:
         return f"Apologies, Sir. I lack the tool `{name}`."
     try:
-        result = fn(**args) if callable(fn) else fn
+        result = call_mcp_tool(name, args)
         return result if result is not None else "Executed."
     except Exception as e:
         print(f"\n[Tool Execution Error ({name})]: {e}")
         return f"Apologies, Sir. `{name}` failed."
+
+
+# Every mode (CLI and socket server) dispatches tools through
+# call_function_safe(), so the MCP bridge needs to be up before either
+# starts accepting input — done here, once, at import time, same as the
+# model load above it.
+print("Connecting to local tool server (MCP)...")
+start_mcp_bridge()
+print("✓ TOOLS ONLINE\n")
 
 
 # =========================================================
@@ -430,7 +723,36 @@ def call_function_safe(name, args):
 # =========================================================
 # CONVERSATION STATE
 # Shared chat history across an active session (for CLI or single-user Socket)
-SHARED_MESSAGES = []
+#
+# Persisted to disk so a server restart (a crash, a code update, closing the
+# laptop) doesn't wipe the immediate conversational thread — long-term memory
+# (persistent_profile.json, semantics.db, tasks.db) already survives a
+# restart; this brings the short-term window in line with that. Deliberately
+# NOT persisted: SESSION_ID/TURN_INDEX (a new boot should get a fresh
+# telemetry session, that's existing intended behavior) and LAST_TOOL_RESULT
+# (a single-turn staging value already cleared immediately after use).
+CONVERSATION_STATE_FILE = os.path.join(ROOT, "memory", "conversation_state.json")
+
+
+def _load_conversation_state() -> list:
+    if os.path.exists(CONVERSATION_STATE_FILE):
+        try:
+            with open(CONVERSATION_STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[Conversation state] Failed to load, starting fresh: {e}")
+    return []
+
+
+def _save_conversation_state():
+    try:
+        with open(CONVERSATION_STATE_FILE, "w") as f:
+            json.dump(SHARED_MESSAGES, f)
+    except Exception as e:
+        print(f"[Conversation state] Failed to save: {e}")
+
+
+SHARED_MESSAGES = _load_conversation_state()
 LAST_TOOL_RESULT = ""
 
 
@@ -457,6 +779,14 @@ def stream_skye_response(user_input: str):
         yield frame("done", text=rule_reply)
         return
 
+    # Past this point a real generation (and maybe a tool call) is about to
+    # happen, which is exactly the gap a filler should cover. handle_client
+    # speaks this in a background thread the moment it sees the frame, so it
+    # overlaps with generation instead of adding to the wait.
+    filler_text = pick_filler(user_input)
+    if filler_text:
+        yield frame("filler", text=filler_text)
+
     # Format user prompt, injecting past tool data if present
     if LAST_TOOL_RESULT:
         augmented_input = f"[System Note: Tool execution returned: {LAST_TOOL_RESULT}]\n\n{user_input}"
@@ -464,9 +794,11 @@ def stream_skye_response(user_input: str):
     else:
         augmented_input = user_input
 
-    # Retrieve the persistent profile and any relevant semantic memories
+    # Retrieve the persistent profile, relevant semantic memories, and any
+    # pending tasks/reminders
     profile = MEMORY.get_persistent_profile()
     memories = MEMORY.search(user_input, top_k=3)
+    upcoming_tasks = TASKS.get_upcoming(5)
     _t["memory"] = time.time()
 
     system_text = PERSONA
@@ -477,6 +809,12 @@ def stream_skye_response(user_input: str):
     if memories:
         memories_str = "\n".join([f"- {m}" for m in memories])
         system_text += f"\n[Relevant Past Memories]:\n{memories_str}"
+
+    if upcoming_tasks:
+        tasks_str = "\n".join(
+            f"- {t['description']} ({format_due(t['due_at'])})" for t in upcoming_tasks
+        )
+        system_text += f"\n[Upcoming Tasks]:\n{tasks_str}"
 
     # Ensure a fresh system message is at the top or update existing
     if not SHARED_MESSAGES or SHARED_MESSAGES[0]["role"] != "system":
@@ -492,7 +830,10 @@ def stream_skye_response(user_input: str):
 
     with MODEL_LOCK:
         prompt = tokenizer.apply_chat_template(
-            SHARED_MESSAGES, tokenize=False, add_generation_prompt=True
+            SHARED_MESSAGES,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
         )
 
     assistant_history = [
@@ -508,7 +849,11 @@ def stream_skye_response(user_input: str):
             model,
             tokenizer,
             prompt=prompt,
-            max_tokens=150,
+            # Was 150 — too tight for the persona's new "explain properly"
+            # length target (~4-6 sentences); that could get cut off
+            # mid-thought before this was raised. MAX_WORDS/MAX_SENTENCES
+            # guardrails below still apply on top of this.
+            max_tokens=320,
         ):
             piece = chunk.text
             _raw_full += piece
@@ -531,7 +876,7 @@ def stream_skye_response(user_input: str):
             else:
                 yield frame("token", text=piece)
 
-        raw_response = _raw_full.split("<|eot_id|>")[0].strip()
+        raw_response = _raw_full.split("<turn|>")[0].strip()
 
         _t["generate"] = time.time()
 
@@ -586,6 +931,8 @@ def stream_skye_response(user_input: str):
         # Append ONLY the model's generated narration! We never append the raw tool
         # result block into the Assistant's own mouth, otherwise it will mimic it later.
         SHARED_MESSAGES.append({"role": "assistant", "content": final_narration})
+
+    _save_conversation_state()
 
     save_telemetry(
         user_input, final_output, guardrails, bool(tool_name), tool_name, tool_args
@@ -665,25 +1012,128 @@ def start_cli_mode():
     print(f"\nTelemetry saved to logs/telemetry_{SESSION_ID}.jsonl\nSystems OFFLINE.")
 
 
+def _speak_filler(conn, send_lock, phrase):
+    """Synthesizes and sends a filler phrase's audio in the background.
+
+    Runs on its own thread so it overlaps with LLM generation on the main
+    connection thread instead of adding to the wait before it. The two
+    threads share one socket, so every send is serialized through
+    `send_lock` — each frame() call is still written whole, just never
+    interleaved byte-for-byte with a frame from the other thread.
+    """
+    try:
+        for pcm, _ in tts.synthesize_reply(phrase, speed_range=(1.0, 1.12)):
+            with send_lock:
+                conn.sendall(
+                    frame(
+                        "audio_chunk",
+                        pcm=base64.b64encode(pcm).decode("ascii"),
+                        sample_rate=24000,
+                        final=False,
+                    )
+                )
+    except Exception as e:
+        print(f"[Filler TTS error]: {e}")
+
+
+def _broadcast_proactive(text: str):
+    """Pushes an unprompted spoken message to every currently-connected client.
+
+    Same shape as a normal turn's outbound frames (a text frame the client
+    displays, then audio_chunk/turn_end for the synthesized voice) except
+    nothing preceded it — no inbound message ever triggered this. Only
+    reaches a browser tab because clients/browser.py's bridge now pumps
+    TCP->WS continuously instead of only right after forwarding a message.
+    """
+    with ACTIVE_CONNECTIONS_LOCK:
+        targets = list(ACTIVE_CONNECTIONS)
+    for conn, send_lock in targets:
+        try:
+            with send_lock:
+                conn.sendall(frame("proactive", text=text))
+            for pcm, is_final in tts.synthesize_reply(text):
+                with send_lock:
+                    conn.sendall(
+                        frame(
+                            "audio_chunk",
+                            pcm=base64.b64encode(pcm).decode("ascii"),
+                            sample_rate=24000,
+                            final=is_final,
+                        )
+                    )
+            with send_lock:
+                conn.sendall(frame("turn_end"))
+        except Exception as e:
+            print(f"[Proactive broadcast error]: {e}")
+
+
 def handle_client(conn):
-    with conn:
+    reader = FrameReader()
+    send_lock = threading.Lock()
+    with ACTIVE_CONNECTIONS_LOCK:
+        ACTIVE_CONNECTIONS.append((conn, send_lock))
+    try:
+        _handle_client_loop(conn, reader, send_lock)
+    finally:
+        with ACTIVE_CONNECTIONS_LOCK:
+            if (conn, send_lock) in ACTIVE_CONNECTIONS:
+                ACTIVE_CONNECTIONS.remove((conn, send_lock))
+
+
+def _handle_client_loop(conn, reader, send_lock):
+    with conn, mx.stream(MLX_STREAM):
         while True:
             data = conn.recv(4096)
             if not data:
                 break
-            user_speech = data.decode().strip()
-            print(f"[Client]: {user_speech}")
-            try:
-                reply = ""
-                for f in stream_skye_response(user_speech):
-                    conn.sendall(f)
-                    payload = json.loads(f.decode())
-                    if payload["type"] == "done":
-                        reply = payload["text"]
-                print(f"[Reply]: {reply}")
-            except Exception as e:
-                print(f"[Socket send error]: {e}")
-                break
+            for msg in reader.feed(data):
+                if msg.get("type") == "text":
+                    user_speech = msg.get("text", "").strip()
+                elif msg.get("type") == "audio":
+                    pcm = base64.b64decode(msg["pcm"])
+                    transcript = stt.transcribe_pcm(
+                        pcm, sample_rate=msg.get("sample_rate", 16000)
+                    ).strip()
+                    with send_lock:
+                        conn.sendall(frame("transcript", text=transcript))
+                    continue
+                else:
+                    continue
+                if not user_speech:
+                    continue
+
+                print(f"[Client]: {user_speech}")
+                try:
+                    reply = ""
+                    for f in stream_skye_response(user_speech):
+                        with send_lock:
+                            conn.sendall(f)
+                        payload = json.loads(f.decode())
+                        if payload["type"] == "filler":
+                            threading.Thread(
+                                target=_speak_filler,
+                                args=(conn, send_lock, payload["text"]),
+                                daemon=True,
+                            ).start()
+                        elif payload["type"] == "done":
+                            reply = payload["text"]
+                    if reply.strip():
+                        for pcm, is_final in tts.synthesize_reply(reply):
+                            with send_lock:
+                                conn.sendall(
+                                    frame(
+                                        "audio_chunk",
+                                        pcm=base64.b64encode(pcm).decode("ascii"),
+                                        sample_rate=24000,
+                                        final=is_final,
+                                    )
+                                )
+                    with send_lock:
+                        conn.sendall(frame("turn_end"))
+                    print(f"[Reply]: {reply}")
+                except Exception as e:
+                    print(f"[Socket send error]: {e}")
+                    return
 
 
 def start_server_mode():
@@ -698,6 +1148,8 @@ def start_server_mode():
         threading.Thread(target=run_async_ws, daemon=True).start()
     except Exception as bridge_err:
         print(f"[Bridge Error]: Could not automatically open browser UI: {bridge_err}")
+
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
 
     with socket.socket() as server_socket:
         server_socket.bind((HOST, PORT))

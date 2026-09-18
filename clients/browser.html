@@ -294,14 +294,18 @@
   let audioContext,analyser,dataArray,isAudioActive=false;
   window.initAudio=async function(){
     try{
-      // Safari will not speak later unless synthesis is touched during a real
-      // user gesture, so warm it up here on the click, before any await.
-      if(window.primeSpeech)window.primeSpeech();
+      // Web Audio playback (SKYE's replies) also needs a real user gesture to
+      // be unlocked in Safari, so create/resume the shared AudioContext here.
       const AC=window.AudioContext||window.webkitAudioContext; audioContext=new AC();
+      // The voice I/O code (capture/playback) lives in a separate, non-module
+      // <script> tag below, which cannot see this module script's top-level
+      // `let` bindings — expose the ones it needs on `window` explicitly.
+      window.audioContext=audioContext;
       if(audioContext.state==='suspended')await audioContext.resume();
       const stream=await navigator.mediaDevices.getUserMedia({audio:{
         echoCancellation:true, noiseSuppression:true, autoGainControl:true
       }});
+      window.micStream=stream;
       analyser=audioContext.createAnalyser(); analyser.fftSize=256;
       audioContext.createMediaStreamSource(stream).connect(analyser);
       dataArray=new Uint8Array(analyser.frequencyBinCount);
@@ -322,7 +326,7 @@
         SecurityError:'Blocked: the page is not in a secure context (use http://localhost, not a LAN IP).'
       }[e.name] || e.message;
       alert('Microphone unavailable ('+e.name+').\n\n'+why+
-            '\n\nNote: this only animates the orb. Voice chat is clients/client.py.');
+            '\n\nYou can still type queries below; voice input/output requires mic access.');
       document.getElementById('start-btn').textContent='AUDIO UNAVAILABLE';
     }
   };
@@ -383,6 +387,7 @@
     ws.onclose=()=>{dot.classList.remove('online');statusT.textContent='OFFLINE';setTimeout(connect,3000);};
     ws.onerror=()=>ws.close();
     let streamed='';
+    let suppressProactiveAudio=false;
     ws.onmessage=(e)=>{
       let msg;
       try{msg=JSON.parse(e.data);}catch(err){return;}
@@ -392,6 +397,7 @@
         qaA.style.display='block';
         qaA.className='qa-answer';
         qaA.textContent='';
+        resetPlayback();
         if(window.setSkyeText)window.setSkyeText('RESPONDING');
       }
       else if(msg.type==='token'){
@@ -409,7 +415,29 @@
         waiting=false;
         sendBtn.disabled=false;
         if(window.setSkyeText)window.setSkyeText('');
-        speak(msg.text);
+      }
+      else if(msg.type==='audio_chunk'){
+        if(suppressProactiveAudio)return;
+        playAudioChunk(msg.pcm, msg.sample_rate||24000, !!msg.final);
+      }
+      else if(msg.type==='turn_end'){
+        // done already updated the text/UI state; nothing else needed here.
+        suppressProactiveAudio=false;
+      }
+      else if(msg.type==='proactive'){
+        // SKYE speaking first — a due task/reminder, not a reply to
+        // anything just sent. While asleep, the user explicitly asked for
+        // quiet, so voice is skipped here (the server's plyer notification,
+        // fired alongside this frame, is the fallback that still reaches
+        // them) rather than teaching the server about client sleep state.
+        if(asleep){ suppressProactiveAudio=true; return; }
+        qaQ.style.display='none';
+        qaA.style.display='block';
+        qaA.className='qa-answer';
+        qaA.textContent=msg.text;
+      }
+      else if(msg.type==='transcript'){
+        handleTranscript(msg.text||'');
       }
       else if(msg.type==='error'){
         qaA.textContent='[error] '+msg.message;
@@ -440,7 +468,10 @@
     showTyping();
 
     if(window.setSkyeText)window.setSkyeText('PROCESSING...');
-    ws.send(text);
+    // Trailing newline: the server's FrameReader (core/protocol.py) is
+    // NDJSON — it buffers until it sees "\n", so a message without one would
+    // just sit unparsed forever.
+    ws.send(JSON.stringify({type:'text', text})+'\n');
     input.value='';
     input.style.height='auto';
     waiting=true;
@@ -448,99 +479,29 @@
   }
 
   // ── VOICE: speech in, speech out ───────────────────────────────────────
-  // Speech synthesis is on-device. Speech RECOGNITION is not: the browser
-  // streams microphone audio to Apple/Google. Same trade clients/client.py
-  // already made with recognize_google().
+  // Both directions are now fully local: STT (mlx-whisper) and TTS (XTTS-v2)
+  // run server-side on-device, so raw audio never leaves this machine. The
+  // browser's job is just capture (VAD + PCM) and playback (a Web Audio
+  // queue fed by "audio_chunk" frames) — no SpeechRecognition, no
+  // speechSynthesis.
   //
   // The wake word is OPTIONAL: anything you say becomes a query, and saying
   // "Skye" first simply strips it. Background speech is therefore also sent,
-  // so "stop listening" exists as a spoken off switch.
+  // so "stop listening" exists as a spoken off switch. This logic used to run
+  // on live SpeechRecognition partials; it's unchanged, just triggered once
+  // per captured utterance on the transcript the server echoes back (see the
+  // "transcript" case in ws.onmessage) instead of continuously.
   const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski)\b[\s,.!?-]*/i;
   const CANCEL=/^\s*(?:scratch that|never ?mind|forget it|ignore that|cancel(?: that)?)\s*[.!?]*\s*$/i;
   const STOP=/^\s*(?:(?:skye|sky)[\s,]*)?(?:stop listening|stop the mic|go to sleep|mute yourself)\s*[.!?]*\s*$/i;
   const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
-  const COMMIT_MS=1400;   // silence after speech before it is sent
-
-  let recog=null,recogWanted=false,speaking=false,asleep=false;
-  let pending='',commitTimer=null,previewOn=false;
-  // While asleep the microphone stays LIVE and audio still reaches Apple; the
-  // only difference is that nothing but the wake word is acted on.
+  // While asleep the microphone stays live (audio still reaches local
+  // Whisper); the only difference is that nothing but the wake word is acted on.
   const WAKE_ONLY=/^(?:wake up|wake|you there|are you there|hello|hey)$/i;
 
+  let recogWanted=false,speaking=false,asleep=false;
+
   function vstatus(t){ if(window.setSkyeText)window.setSkyeText(t); }
-
-  // ---- reply voice: FRIDAY (Iron Man) is Kerry Condon, i.e. Irish, so the
-  // ---- target is an en-IE female voice. Moira is the macOS one. Falls back
-  // ---- to en-GB and then en-US rather than going silent.
-  const VOICE_PREFS=['Moira','Fiona','Siobhan','Karen','Serena','Samantha'];
-  let chosenVoice=null;
-  function pickVoice(){
-    if(!('speechSynthesis' in window))return;
-    const vs=speechSynthesis.getVoices();
-    if(!vs.length)return;                    // populated asynchronously
-    for(const name of VOICE_PREFS){
-      const v=vs.find(x=>x.name===name)||vs.find(x=>x.name.startsWith(name));
-      if(v){ chosenVoice=v; return; }
-    }
-    chosenVoice=vs.find(v=>/^en[-_]IE/i.test(v.lang))
-              ||vs.find(v=>/^en[-_]GB/i.test(v.lang))
-              ||vs.find(v=>/^en[-_]US/i.test(v.lang))
-              ||vs.find(v=>/^en/i.test(v.lang))||null;
-  }
-  if('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged=pickVoice; }
-
-  window.primeSpeech=function(){
-    if(!('speechSynthesis' in window))return;
-    try{ const w=new SpeechSynthesisUtterance(' '); w.volume=0; speechSynthesis.speak(w); }catch(e){}
-    pickVoice();
-  };
-
-  // What SKYE is currently saying, so her own voice leaking into the mic can
-  // be told apart from the user actually interrupting.
-  let spokenText='';
-
-  function stopSpeaking(){
-    speaking=false; spokenText='';
-    try{ speechSynthesis.cancel(); }catch(e){}
-  }
-
-  // Echo guard: recognition runs during playback so the user can barge in,
-  // which means SKYE's own words can come back through the microphone.
-  function isEcho(heard){
-    if(!spokenText)return false;
-    const n=x=>x.toLowerCase().replace(/[^a-z0-9 ]/g,' ').replace(/\s+/g,' ').trim();
-    const h=n(heard), said=n(spokenText);
-    if(!h)return true;
-    if(said.includes(h))return true;
-    const hw=h.split(' ').filter(w=>w.length>3);
-    if(hw.length<2)return false;
-    return hw.filter(w=>said.includes(w)).length/hw.length>0.6;
-  }
-
-  function speak(text){
-    if(!text||!('speechSynthesis' in window))return;
-    if(!chosenVoice)pickVoice();
-    // One utterance per sentence, so delivery varies instead of arriving as a
-    // single flat block. The Web Speech API exposes no SSML, so rate and pitch
-    // are the only handles available.
-    const parts=(text.match(/[^.!?]+[.!?]*/g)||[text]).map(x=>x.trim()).filter(Boolean);
-    speaking=true; spokenText=text;
-    try{ speechSynthesis.cancel(); }catch(e){}
-    parts.forEach((part,i)=>{
-      const u=new SpeechSynthesisUtterance(part);
-      if(chosenVoice)u.voice=chosenVoice;
-      u.lang=(chosenVoice&&chosenVoice.lang)||'en-IE';
-      const question=/\?\s*$/.test(part);
-      const long=part.split(/\s+/).length>18;
-      u.rate=1.08+(question?-0.04:0)+(long?-0.03:0)+((i%2)?0.02:-0.02);
-      u.pitch=1.0+(question?0.10:0)+((i%2)?0.03:-0.02);
-      if(i===parts.length-1){
-        const done=()=>{ speaking=false; spokenText=''; if(recogWanted&&!asleep)vstatus('LISTENING'); };
-        u.onend=done; u.onerror=done;
-      }
-      try{ speechSynthesis.speak(u); }catch(e){ speaking=false; spokenText=''; }
-    });
-  }
 
   // ---- false-start trimming ----
   // "dynamic vector dynamic array is vector" -> "dynamic array is vector".
@@ -557,42 +518,31 @@
     return cut?w.slice(cut).join(' '):text;
   }
 
-  function showPreview(t){
-    if(asleep)return;              // ambient speech must not fill the input box
-    if(!t&&!previewOn)return;      // never clobber something typed by hand
-    previewOn=!!t;
-    input.value=t;
-    input.style.height='auto';
-    input.style.height=Math.min(input.scrollHeight,60)+'px';
-  }
-
-  function scheduleCommit(){
-    if(commitTimer)clearTimeout(commitTimer);
-    commitTimer=setTimeout(commitSpeech,COMMIT_MS);
-  }
-
-  function commitSpeech(){
-    commitTimer=null;
-    let text=pending.trim();
-    pending=''; showPreview('');
+  // Runs once per VAD-captured utterance, on the transcript the server sends
+  // back for an "audio" frame. Same wake/stop/cancel/filler decisions the old
+  // per-recognition-event commitSpeech() made, just triggered once per
+  // utterance instead of continuously.
+  function handleTranscript(rawText){
+    let text=(rawText||'').trim();
     if(!text)return;
 
-    // Asleep: ignore everything that is not the wake word.
     if(asleep){
       const m=text.match(WAKE);
       if(!m)return;
       asleep=false;
       vstatus('LISTENING');
       const rest=text.slice(m[0].length).trim();
-      speak('Yes?');
       if(rest&&!WAKE_ONLY.test(rest)&&rest.replace(/[^a-z0-9]/gi,'').length>=3&&!waiting){
-        input.value=trimFalseStart(rest); previewOn=false; send();
+        input.value=trimFalseStart(rest); send();
       }
       return;
     }
 
     if(STOP.test(text)){
-      asleep=true; pending=''; showPreview('');
+      asleep=true;
+      // Ambient noise during sleep (mic stays live by design) must not glue
+      // onto whatever utterance wakes SKYE back up.
+      resetVadState();
       vstatus('SLEEPING - SAY "SKYE"');
       return;
     }
@@ -605,50 +555,204 @@
     if(!/\s/.test(text)&&FILLER.test(text.replace(/[^a-z0-9]/gi,'')))return;
     if(waiting){ vstatus('BUSY - ONE MOMENT'); return; }
 
-    input.value=text; previewOn=false;
+    input.value=text;
     send();
   }
 
-  window.startVoice=function(){ recogWanted=true; asleep=false; startRecognition(); };
-  window.stopVoice=function(){ recogWanted=false; if(recog){ try{recog.abort();}catch(e){} } vstatus('MIC OFF'); };
+  // ---- playback: a Web Audio queue fed by "audio_chunk" frames ----
+  // Chunks are scheduled back-to-back via a running start-time cursor so
+  // sentence N+1 begins the instant sentence N ends, without gaps or clicks.
+  let nextStartTime=0, scheduledSources=[];
 
-  function startRecognition(){
-    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!SR){ vstatus('SPEECH RECOGNITION UNSUPPORTED'); recogWanted=false; return; }
-    if(recog){ try{recog.abort();}catch(e){} }
-    recog=new SR();
-    recog.continuous=true;
-    recog.interimResults=true;   // show what is heard, so a misspeak is visible
-    recog.lang='en-IN';          // how YOU speak; the reply voice is separate
-    recog.onresult=(e)=>{
-      let fin='',interim='';
-      for(let i=e.resultIndex;i<e.results.length;i++){
-        const r=e.results[i];
-        if(r.isFinal)fin+=r[0].transcript; else interim+=r[0].transcript;
-      }
-      // Barge-in: if SKYE is talking and this is not her own voice echoing
-      // back, cut her off and treat it as the user taking the floor.
-      if(speaking){
-        const probe=(fin||interim).trim();
-        if(!probe||isEcho(probe))return;
-        stopSpeaking();
-        vstatus('LISTENING');
-      }
-      if(fin)pending=(pending?pending+' ':'')+fin.trim();
-      showPreview(((pending?pending+' ':'')+interim.trim()).trim());
-      scheduleCommit();
-    };
-    recog.onerror=(e)=>{
-      console.warn('recognition error:',e.error);
-      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-        recogWanted=false; vstatus('SPEECH RECOGNITION BLOCKED');
-      }
-    };
-    // Recognition self-terminates on silence. Always restart: it now stays up
-    // during playback so the user can interrupt.
-    recog.onend=()=>{ if(recogWanted){ try{recog.start();}catch(e){} } };
-    try{ recog.start(); vstatus('LISTENING'); }catch(e){ console.warn(e); }
+  function resetPlayback(){
+    scheduledSources.forEach(s=>{ try{s.stop();}catch(e){} });
+    scheduledSources=[];
+    nextStartTime=0;
   }
+
+  function stopSpeaking(){
+    speaking=false;
+    resetPlayback();
+  }
+
+  function playAudioChunk(base64pcm, sampleRate, isFinal){
+    if(!audioContext)return;
+    if(audioContext.state==='suspended')audioContext.resume();
+    const raw=atob(base64pcm);
+    const bytes=new Uint8Array(raw.length);
+    for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+    const floatData=new Float32Array(bytes.buffer);
+    const buffer=audioContext.createBuffer(1, floatData.length, sampleRate||24000);
+    buffer.copyToChannel(floatData,0);
+    const source=audioContext.createBufferSource();
+    source.buffer=buffer;
+    source.connect(audioContext.destination);
+    const startAt=Math.max(nextStartTime, audioContext.currentTime);
+    source.start(startAt);
+    nextStartTime=startAt+buffer.duration;
+    scheduledSources.push(source);
+    speaking=true;
+    if(isFinal){
+      source.onended=()=>{
+        speaking=false;
+        if(recogWanted&&!asleep)vstatus('LISTENING');
+      };
+    }
+  }
+
+  // ---- capture: energy-based VAD + raw PCM, no SpeechRecognition ----
+  // SpeechRecognition streams mic audio to Apple/Google even if you never
+  // look at its transcript, so it can't be kept around just for its
+  // endpointing signal — genuinely local/private STT means detecting
+  // speech/silence ourselves. Uses ScriptProcessorNode (deprecated but
+  // simple and universally supported) rather than an AudioWorklet module,
+  // taps the same getUserMedia stream initAudio() already opened, and
+  // outputs to a zero-gain node so raw mic input is never actually heard.
+  // micStream is set on `window` by initAudio() in the module script above
+  // (module scripts don't share top-level bindings with classic scripts);
+  // referencing it here as a bare identifier resolves via the global object.
+  let captureProcessor=null;
+  let utteranceChunks=[], vadActive=false, vadSilenceStartMs=null;
+  let vadCandidateChunks=[], vadCandidateBlocks=0;
+  const VAD_ENERGY_THRESHOLD=0.015;
+  const VAD_SILENCE_MS=800;
+  const VAD_MIN_UTTERANCE_MS=300;
+  // A single loud block shouldn't cut SKYE off or start capturing — a
+  // momentary echo leak (before acoustic echo cancellation converges, right
+  // at the start of a session) or a click/cough looks identical to speech
+  // for one block. Require this many consecutive speech-classified blocks
+  // (~130-150ms at a 2048-sample block size) before committing.
+  const VAD_CONFIRM_BLOCKS=3;
+  // Without a hard cap, an utterance that never gets a full silence gap
+  // (e.g. background noise during "asleep", where the mic stays live by
+  // design) accumulates forever and corrupts whatever comes next. Force a
+  // flush well before this becomes a problem.
+  const VAD_MAX_UTTERANCE_MS=15000;
+
+  function resetVadState(){
+    vadActive=false; utteranceChunks=[]; vadSilenceStartMs=null;
+    vadCandidateChunks=[]; vadCandidateBlocks=0;
+  }
+
+  function rms(data){
+    let sum=0; for(let i=0;i<data.length;i++)sum+=data[i]*data[i];
+    return Math.sqrt(sum/data.length);
+  }
+
+  function downsampleTo16k(samples, origRate){
+    if(origRate===16000)return samples;
+    const ratio=origRate/16000;
+    const newLen=Math.floor(samples.length/ratio);
+    const result=new Float32Array(newLen);
+    for(let i=0;i<newLen;i++){
+      const srcIdx=i*ratio;
+      const i0=Math.floor(srcIdx), i1=Math.min(i0+1, samples.length-1);
+      const frac=srcIdx-i0;
+      result[i]=samples[i0]*(1-frac)+samples[i1]*frac;
+    }
+    return result;
+  }
+
+  function floatTo16BitPCM(samples){
+    const out=new Int16Array(samples.length);
+    for(let i=0;i<samples.length;i++){
+      const s=Math.max(-1,Math.min(1,samples[i]));
+      out[i]=s<0?s*0x8000:s*0x7FFF;
+    }
+    return out;
+  }
+
+  function arrayBufferToBase64(buf){
+    let binary='';
+    const bytes=new Uint8Array(buf);
+    const chunkSize=0x8000;
+    for(let i=0;i<bytes.length;i+=chunkSize){
+      binary+=String.fromCharCode.apply(null, bytes.subarray(i,i+chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function finishUtterance(){
+    const chunks=utteranceChunks;
+    resetVadState();
+    if(!chunks.length)return;
+    const totalLen=chunks.reduce((a,c)=>a+c.length,0);
+    const durMs=totalLen/audioContext.sampleRate*1000;
+    if(durMs<VAD_MIN_UTTERANCE_MS)return;   // too short, almost certainly noise
+
+    const merged=new Float32Array(totalLen);
+    let off=0; for(const c of chunks){ merged.set(c,off); off+=c.length; }
+    const pcm16k=downsampleTo16k(merged, audioContext.sampleRate);
+    const int16=floatTo16BitPCM(pcm16k);
+    const b64=arrayBufferToBase64(int16.buffer);
+    if(ws&&ws.readyState===WebSocket.OPEN){
+      ws.send(JSON.stringify({type:'audio', pcm:b64, sample_rate:16000})+'\n');
+    }
+    if(!waiting)vstatus('PROCESSING...');
+  }
+
+  function handleAudioBlock(data){
+    const isSpeech=rms(data)>VAD_ENERGY_THRESHOLD;
+    if(isSpeech){
+      if(!vadActive){
+        // Not yet a confirmed utterance — buffer as a candidate so the
+        // opening of the word isn't lost, but don't commit (and don't barge
+        // in) until speech has actually been sustained for a few blocks.
+        vadCandidateChunks.push(new Float32Array(data));
+        vadCandidateBlocks++;
+        if(vadCandidateBlocks>=VAD_CONFIRM_BLOCKS){
+          // Barge-in: speech sustained while SKYE is talking means the user
+          // is taking the floor, not a momentary echo leak (the
+          // getUserMedia echoCancellation constraint handles the acoustic
+          // side, but needs a moment to converge at the start of a session).
+          if(speaking){ stopSpeaking(); vstatus('LISTENING'); }
+          vadActive=true;
+          utteranceChunks=vadCandidateChunks;
+          vadCandidateChunks=[]; vadCandidateBlocks=0;
+          vstatus('LISTENING...');
+        }
+      } else {
+        utteranceChunks.push(new Float32Array(data));
+      }
+      vadSilenceStartMs=null;
+    } else {
+      vadCandidateChunks=[]; vadCandidateBlocks=0;   // candidate run broken by silence
+      if(vadActive){
+        if(vadSilenceStartMs===null)vadSilenceStartMs=performance.now();
+        utteranceChunks.push(new Float32Array(data));   // keep trailing silence for natural cadence
+        if(performance.now()-vadSilenceStartMs>=VAD_SILENCE_MS)finishUtterance();
+      }
+    }
+    if(vadActive){
+      const durMs=utteranceChunks.reduce((a,c)=>a+c.length,0)/audioContext.sampleRate*1000;
+      if(durMs>=VAD_MAX_UTTERANCE_MS)finishUtterance();
+    }
+  }
+
+  function startCapture(){
+    if(!audioContext||!micStream)return;
+    const src=audioContext.createMediaStreamSource(micStream);
+    captureProcessor=audioContext.createScriptProcessor(2048,1,1);
+    const silentGain=audioContext.createGain();
+    silentGain.gain.value=0;
+    src.connect(captureProcessor);
+    captureProcessor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+    captureProcessor.onaudioprocess=(e)=>handleAudioBlock(e.inputBuffer.getChannelData(0));
+    vstatus('LISTENING');
+  }
+
+  function stopCapture(){
+    if(captureProcessor){
+      captureProcessor.onaudioprocess=null;
+      try{ captureProcessor.disconnect(); }catch(e){}
+      captureProcessor=null;
+    }
+    resetVadState();
+  }
+
+  window.startVoice=function(){ recogWanted=true; asleep=false; startCapture(); };
+  window.stopVoice=function(){ recogWanted=false; stopCapture(); vstatus('MIC OFF'); };
 
   sendBtn.addEventListener('click',send);
   input.addEventListener('keydown',(e)=>{

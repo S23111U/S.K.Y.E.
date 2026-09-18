@@ -7,7 +7,7 @@ import speech_recognition as sr
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, BASE_DIR)
-from core.protocol import FrameReader
+from core.protocol import FrameReader, frame
 
 HOST = "127.0.0.1"
 PORT = 12345
@@ -31,15 +31,18 @@ def command():
 
 def receive_reply(sock):
     reader = FrameReader()
+    reply_text = ""
     while True:
         chunk = sock.recv(4096)
         if not chunk:
-            return ""
+            return reply_text
         for f in reader.feed(chunk):
             if f["type"] == "done":
-                return f["text"]
-            if f["type"] == "error":
+                reply_text = f["text"]
+            elif f["type"] == "error":
                 return "Something went wrong."
+            elif f["type"] == "turn_end":
+                return reply_text
 
 
 def say(text):
@@ -58,7 +61,7 @@ if __name__ == "__main__":
             if not message:
                 continue
             try:
-                client_socket.sendall(message.encode())
+                client_socket.sendall(frame("text", text=message))
             except BrokenPipeError:
                 print("Connection closed by server")
                 break

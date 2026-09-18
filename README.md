@@ -9,14 +9,14 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python)](https://python.org)
 [![MLX](https://img.shields.io/badge/MLX-Apple%20Silicon-000000?style=flat-square&logo=apple)](https://github.com/ml-explore/mlx)
-[![Llama-3](https://img.shields.io/badge/Model-Llama--3%208B-purple?style=flat-square)](https://huggingface.co/mlx-community/Meta-Llama-3-8B-Instruct-4bit)
+[![Gemma-4](https://img.shields.io/badge/Model-Gemma--4%20E4B-purple?style=flat-square)](https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 </div>
 
 ---
 
-S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine built on **Meta Llama-3 8B** that remembers everything you discuss, calls real tools, and holds a consistent personality — all without sending a single byte of data to the cloud.
+S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine built on **Google Gemma 4 E4B** that remembers everything you discuss, calls real tools, and holds a consistent personality — all without sending a single byte of data to the cloud.
 
 ---
 
@@ -170,7 +170,7 @@ python scripts/nightly_agi_cron.py
 
 | Component | Technology |
 |---|---|
-| **Base LLM** | `mlx-community/Meta-Llama-3-8B-Instruct-4bit` (stock, no adapters) |
+| **Base LLM** | `mlx-community/gemma-4-e4b-it-4bit` (stock, no adapters) |
 | **Inference** | `mlx-lm` (Apple Silicon native) |
 | **Personality** | System prompt — `prompts/skye_persona.txt` |
 | **Embedding Model** | `all-MiniLM-L6-v2` (sentence-transformers) |

@@ -13,10 +13,18 @@ from memory.manager import MemoryManager
 # [PILLAR 3: SEMANTIC INGESTOR]
 # =========================================================
 
-def ingest_all_logs():
+def ingest_all_logs(memory: MemoryManager = None):
+    """Embeds dialogue pairs from logs into Tier 2 semantic memory.
+
+    Accepts an already-instantiated MemoryManager (the in-process nightly
+    scheduler in core_v2.py passes its own global `MEMORY`) so this doesn't
+    load a second copy of the sentence-transformers embedding model; standalone
+    runs still construct their own as before.
+    """
     print("[MLOps]: Starting historical log ingestion for Tier 2 semantics...")
-    
-    memory = MemoryManager(ROOT)
+
+    if memory is None:
+        memory = MemoryManager(ROOT)
     log_files = glob.glob(os.path.join(ROOT, "logs", "*.jsonl")) + glob.glob(os.path.join(ROOT, "logs", "processed_logs", "*.jsonl"))
     
     if not log_files:
