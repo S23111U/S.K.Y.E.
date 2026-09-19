@@ -26,7 +26,11 @@ from core.protocol import FrameReader
 # ---------- Serve HTML over HTTP ----------
 def start_http_server():
     os.chdir(BASE_DIR)  # Serve from project root
-    handler = http.server.SimpleHTTPRequestHandler
+    class handler(http.server.SimpleHTTPRequestHandler):
+        def end_headers(self):
+            # Always serve the latest UI; a cached page hid earlier changes.
+            self.send_header("Cache-Control", "no-store")
+            super().end_headers()
     with socketserver.TCPServer(("", HTTP_PORT), handler) as httpd:
         print(f"🌍 UI available at http://localhost:{HTTP_PORT}/{HTML_PATH}")
         httpd.serve_forever()

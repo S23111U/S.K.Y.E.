@@ -161,7 +161,7 @@
   const PALETTES = {
     default:   { primary: new THREE.Color(0x1e88c8), secondary: new THREE.Color(0x6fcbff), atmosphere: new THREE.Color(0x8fd8ff), cssPrim: '#1e88c8', cssSec: '#4dbdf5', fog: 0xeaf6ff },
     health:    { primary: new THREE.Color(0xcc0000), secondary: new THREE.Color(0xff4444), atmosphere: new THREE.Color(0xff0000), cssPrim: '#cc0000', cssSec: '#ff4444', fog: 0xffdddd },
-    knowledge: { primary: new THREE.Color(0x0044aa), secondary: new THREE.Color(0x0080FF), atmosphere: new THREE.Color(0x8899ff), cssPrim: '#0044aa', cssSec: '#00aaff', fog: 0xeef4ff },
+    knowledge: { primary: new THREE.Color(0xd9640a), secondary: new THREE.Color(0xffa04d), atmosphere: new THREE.Color(0xffc48a), cssPrim: '#d9640a', cssSec: '#ff9a45', fog: 0xfff3e6 },
     finance:   { primary: new THREE.Color(0x0a8a4a), secondary: new THREE.Color(0x2ee6a0), atmosphere: new THREE.Color(0x66ffaa), cssPrim: '#0a8a4a', cssSec: '#2ee6a0', fog: 0xeafff2 }
   };
   let currentTarget = PALETTES.default;
@@ -183,12 +183,12 @@
   function getGlowSpriteTex() {
     const c = document.createElement('canvas'); c.width = c.height = 128;
     const ctx = c.getContext('2d'), g = ctx.createRadialGradient(64,64,0,64,64,64);
-    g.addColorStop(0,'rgba(255,255,255,0.85)'); g.addColorStop(1,'rgba(255,255,255,0)');
+    g.addColorStop(0,'rgba(255,255,255,0.85)'); g.addColorStop(0.35,'rgba(255,255,255,0.35)'); g.addColorStop(0.7,'rgba(255,255,255,0.08)'); g.addColorStop(1,'rgba(255,255,255,0)');
     ctx.fillStyle = g; ctx.fillRect(0,0,128,128); return new THREE.CanvasTexture(c);
   }
   const glowMat = new THREE.SpriteMaterial({ map: getGlowSpriteTex(), color: currentTarget.atmosphere, transparent: true, blending: THREE.NormalBlending });
   activeMaterials.atmosphere.push(glowMat);
-  const glowSprite = new THREE.Sprite(glowMat); glowSprite.scale.set(70,70,1); glowSprite.position.z = -10; atmosphereGroup.add(glowSprite);
+  const glowSprite = new THREE.Sprite(glowMat); glowSprite.scale.set(70,70,1); glowSprite.position.z = -10; glowSprite.visible = false; // the soft halo rendered as banded specks
 
   function getCircuitTex() {
     const c = document.createElement('canvas'); c.width = c.height = 256;
@@ -200,7 +200,7 @@
   const shellGroup = new THREE.Group(); galaxy.add(shellGroup);
   function createPlate(r,ps,pl,ts,tl){
     const geo=new THREE.SphereGeometry(r,32,32,ps,pl,ts,tl);
-    const mat=new THREE.MeshBasicMaterial({map:circuitTex,transparent:true,opacity:0.6,side:THREE.DoubleSide,blending:THREE.NormalBlending,depthWrite:false,color:currentTarget.secondary});
+    const mat=new THREE.MeshBasicMaterial({transparent:true,opacity:0.12,side:THREE.DoubleSide,blending:THREE.NormalBlending,depthWrite:false,color:currentTarget.secondary});
     activeMaterials.secondary.push(mat);
     const m=new THREE.Mesh(geo,mat);
     const wm=new THREE.LineBasicMaterial({color:currentTarget.primary,transparent:true,opacity:0.3});
