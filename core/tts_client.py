@@ -154,14 +154,14 @@ def cached_phrase(phrase: str, mood: str = "calm") -> bytes:
 
     Fillers cover the LLM's thinking time; synthesizing them live would put
     TTS on the GPU at exactly the moment the LLM needs it. Keyed on the phrase,
-    mood, engine and the reference clip's mtime, so changing the voice
-    regenerates. The mood shapes the delivery (an empathetic filler is spoken
+    mood settings, engine and the reference clip's mtime, so changing the
+    voice or a mood's parameters regenerates. The mood shapes the delivery (an empathetic filler is spoken
     softly, a pleased one brightly).
     """
     from core.mood import MOOD_PARAMS  # local: keeps this module importable alone
 
     key = hashlib.md5(
-        f"turbo|{mood}|{phrase}|{os.path.getmtime(REFERENCE_VOICE)}".encode()
+        f"turbo|{mood}|{sorted(MOOD_PARAMS[mood].items())}|{phrase}|{os.path.getmtime(REFERENCE_VOICE)}".encode()
     ).hexdigest()[:16]
     path = os.path.join(FILLER_CACHE_DIR, f"{key}.f32")
     if os.path.isfile(path):

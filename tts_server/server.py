@@ -11,9 +11,11 @@ trap the MCP server hit).
 
   in : {"op": "say", "id": 3, "text": "...", "params": {"temperature": 0.8,
         "top_p": 0.95, "repetition_penalty": 1.2, "voice": "happy",
-        "rate": 1.07, "gain": 1.0}}
-       rate: playback-rate change applied to the output (pitch and pace move
-       together, like real emotional speech); gain: loudness multiplier.
+        "tempo": 1.08, "pitch": 1.03, "gain": 1.0}}
+       tempo: speaking-speed multiplier that leaves pitch and voice character
+       untouched (WSOLA time-stretch); pitch: small pitch multiplier (keep
+       within ~+-4%, or the voice stops sounding like the same person);
+       gain: loudness multiplier.
        {"op": "cancel", "id": 3}
   out: {"ready": true}                                  once, after warm-up
        {"id": 3, "pcm": "<b64 f32le mono>", "sr": 24000}  as audio is produced
@@ -75,10 +77,73 @@ print(f"[tts_server] voices: {sorted(VOICES)}", file=sys.stderr)
 for _ in model.generate(text="Warm up.", verbose=False):
     pass
 
+class Stretcher:
+    """Streaming WSOLA time-stretch: changes speaking speed while leaving pitch
+    and formants (the voice's identity) alone. speed > 1 is faster.
+
+    An earlier version changed pace by resampling, which also shifted every
+    formant — each mood then sounded like a different person. Here 32 ms
+    Hann-windowed frames are re-laid at a different hop, and each frame's
+    source position is nudged (within +-8 ms) to the point that best continues
+    the previous frame, so waveform periods line up and there is no warble.
+    """
+
+    def __init__(self, speed, sr=24000):
+        self.speed = speed
+        self.N = int(0.032 * sr)
+        self.Hs = self.N // 2
+        self.Ha = self.Hs * speed
+        self.tol = int(0.008 * sr)
+        self.win = np.hanning(self.N + 1)[:-1].astype(np.float32)  # sums to 1 at 50% overlap
+        self.buf = np.zeros(0, np.float32)
+        self.base = 0            # absolute input index of buf[0]
+        self.k = 0
+        self.prev = None         # absolute input position chosen for the previous frame
+        self.acc = np.zeros(self.N, np.float32)
+
+    def push(self, x):
+        if self.speed == 1.0:
+            return x
+        self.buf = np.concatenate([self.buf, x])
+        out = []
+        N, Hs = self.N, self.Hs
+        while True:
+            nominal = int(round(self.k * self.Ha))
+            need_to = max(nominal + self.tol, (self.prev or 0) + Hs) + N   # exclusive, absolute
+            if need_to > self.base + len(self.buf):
+                break
+            if self.prev is None:
+                pos = 0
+            else:
+                lo = max(nominal - self.tol, self.base)
+                target = self.buf[self.prev + Hs - self.base : self.prev + Hs - self.base + N]
+                best, best_score = lo, -np.inf
+                # correlation of every candidate segment with the natural continuation
+                cands = np.lib.stride_tricks.sliding_window_view(
+                    self.buf[lo - self.base : nominal + self.tol - self.base + N], N
+                )
+                scores = cands @ target
+                scores = scores / (np.linalg.norm(cands, axis=1) + 1e-9)
+                best = lo + int(np.argmax(scores))
+                pos = best
+            seg = self.buf[pos - self.base : pos - self.base + N]
+            self.acc += self.win * seg
+            out.append(self.acc[:Hs].copy())
+            self.acc = np.concatenate([self.acc[Hs:], np.zeros(Hs, np.float32)])
+            self.prev = pos
+            self.k += 1
+            # drop input that can no longer be referenced
+            keep_from = min(max(int(round(self.k * self.Ha)) - self.tol, 0), pos + Hs)
+            if keep_from > self.base:
+                self.buf = self.buf[keep_from - self.base :]
+                self.base = keep_from
+        return np.concatenate(out) if out else np.zeros(0, np.float32)
+
+
 class Retimer:
-    """Streaming playback-rate change (rate > 1: faster and higher; < 1: slower
-    and lower). Linear interpolation with the read position carried across
-    chunks, so chunk boundaries stay continuous (no clicks)."""
+    """Streaming playback-rate change (pitch and pace together). Used only for
+    the tiny pitch component; linear interpolation with the read position
+    carried across chunks so boundaries stay continuous."""
 
     def __init__(self, rate):
         self.rate, self.buf, self.pos = rate, np.zeros(0, np.float32), 0.0
@@ -135,7 +200,10 @@ while True:
     params = req.get("params") or {}
     model._conds = VOICES.get(params.get("voice"), VOICES["default"])
     t0, first_ms, was_cancelled = time.time(), None, False
-    retimer = Retimer(float(params.get("rate", 1.0)))
+    # Net effect wanted: speed x tempo, pitch x pitch. Stretch by tempo/pitch,
+    # then play back at `pitch` (which speeds up by pitch and raises it by pitch).
+    tempo, pitch = float(params.get("tempo", 1.0)), float(params.get("pitch", 1.0))
+    stretcher, retimer = Stretcher(tempo / pitch), Retimer(pitch)
     gain = float(params.get("gain", 1.0))
     try:
         for r in model.generate(
@@ -152,7 +220,7 @@ while True:
                     cancelled.discard(rid)
                     was_cancelled = True
                     break
-            audio = retimer.push(np.array(r.audio, dtype=np.float32).reshape(-1))
+            audio = retimer.push(stretcher.push(np.array(r.audio, dtype=np.float32).reshape(-1)))
             if gain != 1.0:
                 audio = np.clip(audio * gain, -1.0, 1.0)
             if len(audio) == 0:

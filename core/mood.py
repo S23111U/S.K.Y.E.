@@ -15,9 +15,11 @@ ordinary news lists as sad and capability lists as happy. The user's own words
 are the reliable signal, so the reply only contributes an apology check.
 
 Chatterbox Turbo has no emotion control (its `exaggeration` input is ignored)
-and sampling temperature alone was inaudible, so each mood also carries `rate`
-(playback-rate change: pitch and pace together, as in real speech) and `gain`,
-applied in tts_server. A recording of the user in that tone, saved as
+and sampling temperature alone was inaudible, so each mood also carries a
+`tempo` change (a formant-preserving time-stretch: same voice, different pace),
+a very small `pitch` shift and a `gain`, applied in tts_server. Pitch is kept
+to a few percent on purpose: an earlier version resampled by 10-12%, which
+moved the formants and made every mood sound like a different person. A recording of the user in that tone, saved as
 assets/reference_voice_<mood>.wav (happy / sad / concerned), is used for the
 voice conditioning when present and is the strongest lever of all.
 """
@@ -25,10 +27,14 @@ voice conditioning when present and is the strongest lever of all.
 import re
 
 MOOD_PARAMS = {
-    "calm":      dict(temperature=0.70, top_p=0.95, repetition_penalty=1.20, rate=1.00, gain=1.00),
-    "happy":     dict(temperature=0.80, top_p=0.98, repetition_penalty=1.15, rate=1.10, gain=1.00, voice="happy"),
-    "sad":       dict(temperature=0.60, top_p=0.90, repetition_penalty=1.25, rate=0.88, gain=0.80, voice="sad"),
-    "concerned": dict(temperature=0.65, top_p=0.92, repetition_penalty=1.22, rate=0.94, gain=0.90, voice="concerned"),
+    # tempo: speaking speed (voice character untouched); pitch: kept within a
+    # few percent — larger shifts move the formants and make each mood sound
+    # like a different person; gain: loudness. Temperatures are deliberately
+    # near-identical for the same reason.
+    "calm":      dict(temperature=0.70, top_p=0.95, repetition_penalty=1.20, tempo=1.00, pitch=1.00, gain=1.00),
+    "happy":     dict(temperature=0.75, top_p=0.97, repetition_penalty=1.15, tempo=1.08, pitch=1.03, gain=1.00, voice="happy"),
+    "sad":       dict(temperature=0.68, top_p=0.93, repetition_penalty=1.22, tempo=0.88, pitch=0.97, gain=0.80, voice="sad"),
+    "concerned": dict(temperature=0.70, top_p=0.94, repetition_penalty=1.20, tempo=0.94, pitch=1.00, gain=0.90, voice="concerned"),
 }
 
 EMOTION_MODEL = "j-hartmann/emotion-english-distilroberta-base"
