@@ -44,6 +44,12 @@ def ingest_all_logs(memory: MemoryManager = None):
                     
                     if not user_input or not assistant_output:
                         continue
+
+                    # Answers derived from web_search are not durable facts:
+                    # they go stale, and (seen in practice) a wrong one stored
+                    # here gets recalled later in preference to a fresh search.
+                    if (data.get("response_stats") or {}).get("tool_dispatched") == "web_search":
+                        continue
                         
                     # We chunk the dialogue pair into a single semantic unit
                     # Strip XML for cleaner memory

@@ -72,7 +72,7 @@ class MemoryManager:
         )
         self.conn.commit()
 
-    def search(self, query, top_k=3, min_score=0.35):
+    def search(self, query, top_k=3, min_score=0.35, include_web=False):
         t0 = time.time()
         query_embedding = self.model.encode(query).astype(np.float32)
         t1 = time.time()
@@ -91,6 +91,13 @@ class MemoryManager:
         # similarity at once, instead of a Python loop doing one dot product
         # per row. Same formula, same result — this only ever gets slower as
         # semantics.db grows, and nightly ingestion now actually runs.
+        # Web-search rows ("[Web, <date>] ...") go stale fast and, injected
+        # passively, made the model answer current-events questions from old
+        # snippets instead of searching. They stay stored but are opt-in.
+        if not include_web:
+            rows = [r for r in rows if not r[0].startswith("[Web")]
+            if not rows:
+                return []
         contents = [r[0] for r in rows]
         embeddings = np.frombuffer(
             b"".join(r[1] for r in rows), dtype=np.float32
