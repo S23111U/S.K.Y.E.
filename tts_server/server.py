@@ -15,7 +15,9 @@ trap the MCP server hit).
        tempo: speaking-speed multiplier that leaves pitch and voice character
        untouched (WSOLA time-stretch); pitch: small pitch multiplier (keep
        within ~+-4%, or the voice stops sounding like the same person);
-       gain: loudness multiplier.
+       gain: loudness multiplier; pause_ms: extra silence after each sentence
+       (sad and worried speech is more halting); lowpass_hz: gentle low-pass
+       for a softer, less bright tone.
        {"op": "cancel", "id": 3}
   out: {"ready": true}                                  once, after warm-up
        {"id": 3, "pcm": "<b64 f32le mono>", "sr": 24000}  as audio is produced
@@ -30,6 +32,7 @@ import base64
 import json
 import os
 import queue
+import re
 import sys
 import threading
 import time
@@ -40,11 +43,13 @@ sys.stdout = sys.stderr
 import mlx.core as mx
 import numpy as np
 from mlx_audio.tts.utils import load_model
+from scipy.signal import lfilter
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ASSETS = os.path.join(ROOT, "assets")
 REPO = "mlx-community/chatterbox-turbo-fp16"
 DEFAULT_REF = os.path.join(ASSETS, "reference_voice_short.wav")
+SILENCE_THRESHOLD = 0.008  # |sample| below this counts as silence when trimming edges
 STREAM_INTERVAL_S = 1.5  # audio per streamed chunk: lower = earlier first word, slower overall
 
 _send_lock = threading.Lock()
@@ -205,29 +210,69 @@ while True:
     tempo, pitch = float(params.get("tempo", 1.0)), float(params.get("pitch", 1.0))
     stretcher, retimer = Stretcher(tempo / pitch), Retimer(pitch)
     gain = float(params.get("gain", 1.0))
+    pause = np.zeros(int(float(params.get("pause_ms", 0)) / 1000 * 24000), np.float32)
+    lp_hz = float(params.get("lowpass_hz", 0))
+    if lp_hz:
+        a_lp = 1 - np.exp(-2 * np.pi * lp_hz / 24000)   # one-pole low-pass
+        lp_zi = np.zeros(1, np.float32)
+
+    def emit(samples):
+        """Retime, soften and send one block of audio."""
+        global lp_zi
+        audio = retimer.push(stretcher.push(samples))
+        if lp_hz and len(audio):
+            audio, lp_zi = lfilter([a_lp], [1, -(1 - a_lp)], audio, zi=lp_zi)
+            audio = audio.astype(np.float32)
+        if gain != 1.0:
+            audio = np.clip(audio * gain, -1.0, 1.0)
+        return audio
+
+    # Sentences are generated one at a time (rather than handing Turbo the whole
+    # reply, which merges them) so a pause can be placed between them.
+    sentences = [x for x in re.split(r"(?<=[.!?])\s+", req["text"].strip()) if x.strip()]
     try:
-        for r in model.generate(
-            text=req["text"],
-            verbose=False,
-            stream=True,
-            streaming_interval=STREAM_INTERVAL_S,
-            temperature=params.get("temperature", 0.8),
-            top_p=params.get("top_p", 0.95),
-            repetition_penalty=params.get("repetition_penalty", 1.2),
-        ):
-            with cancel_lock:
-                if rid in cancelled:
-                    cancelled.discard(rid)
-                    was_cancelled = True
-                    break
-            audio = retimer.push(stretcher.push(np.array(r.audio, dtype=np.float32).reshape(-1)))
-            if gain != 1.0:
-                audio = np.clip(audio * gain, -1.0, 1.0)
-            if len(audio) == 0:
-                continue
-            if first_ms is None:
-                first_ms = round((time.time() - t0) * 1000)
-            send({"id": rid, "pcm": base64.b64encode(audio.tobytes()).decode("ascii"), "sr": r.sample_rate})
+        for si, sentence in enumerate(sentences):
+            first_chunk, held = True, 0   # held: trailing silent samples not yet sent
+            for r in model.generate(
+                text=sentence,
+                verbose=False,
+                stream=True,
+                streaming_interval=STREAM_INTERVAL_S,
+                temperature=params.get("temperature", 0.8),
+                top_p=params.get("top_p", 0.95),
+                repetition_penalty=params.get("repetition_penalty", 1.2),
+            ):
+                with cancel_lock:
+                    if rid in cancelled:
+                        cancelled.discard(rid)
+                        was_cancelled = True
+                        break
+                raw = np.array(r.audio, dtype=np.float32).reshape(-1)
+                # Turbo pads every generation with a little silence at both
+                # ends. Strip it (holding back trailing silence until more
+                # speech follows) so the gap between sentences is exactly the
+                # mood's pause_ms, not padding plus pause.
+                loud = np.nonzero(np.abs(raw) > SILENCE_THRESHOLD)[0]
+                if first_chunk and len(loud):
+                    raw, loud = raw[loud[0]:], loud - loud[0]
+                if len(loud) == 0:
+                    if not first_chunk:
+                        held += len(raw)
+                    continue
+                first_chunk = False
+                raw, held = np.concatenate([np.zeros(held, np.float32), raw[: loud[-1] + 1]]), len(raw) - loud[-1] - 1
+                audio = emit(raw)
+                if len(audio) == 0:
+                    continue
+                if first_ms is None:
+                    first_ms = round((time.time() - t0) * 1000)
+                send({"id": rid, "pcm": base64.b64encode(audio.tobytes()).decode("ascii"), "sr": r.sample_rate})
+            if was_cancelled:
+                break
+            if len(pause) and si < len(sentences) - 1:
+                audio = emit(pause)
+                if len(audio):
+                    send({"id": rid, "pcm": base64.b64encode(audio.tobytes()).decode("ascii"), "sr": 24000})
     except Exception as e:
         print(f"[tts_server] generation error: {type(e).__name__}: {e}", file=sys.stderr)
     send({

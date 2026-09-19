@@ -29,12 +29,14 @@ import re
 MOOD_PARAMS = {
     # tempo: speaking speed (voice character untouched); pitch: kept within a
     # few percent — larger shifts move the formants and make each mood sound
-    # like a different person; gain: loudness. Temperatures are deliberately
-    # near-identical for the same reason.
-    "calm":      dict(temperature=0.70, top_p=0.95, repetition_penalty=1.20, tempo=1.00, pitch=1.00, gain=1.00),
-    "happy":     dict(temperature=0.75, top_p=0.97, repetition_penalty=1.15, tempo=1.08, pitch=1.03, gain=1.00, voice="happy"),
-    "sad":       dict(temperature=0.68, top_p=0.93, repetition_penalty=1.22, tempo=0.88, pitch=0.97, gain=0.80, voice="sad"),
-    "concerned": dict(temperature=0.70, top_p=0.94, repetition_penalty=1.20, tempo=0.94, pitch=1.00, gain=0.90, voice="concerned"),
+    # like a different person; gain: loudness; pause_ms: silence added after each
+    # sentence and lowpass_hz: a softer tone — how sad or worried speech actually
+    # sounds, and neither touches the voice's identity. Temperatures are
+    # deliberately near-identical for the same reason.
+    "calm":      dict(temperature=0.70, top_p=0.95, repetition_penalty=1.20, tempo=1.00, pitch=1.00, gain=1.00, pause_ms=260),
+    "happy":     dict(temperature=0.75, top_p=0.97, repetition_penalty=1.15, tempo=1.08, pitch=1.03, gain=1.00, pause_ms=170, voice="happy"),
+    "sad":       dict(temperature=0.68, top_p=0.93, repetition_penalty=1.22, tempo=0.84, pitch=0.965, gain=0.75, pause_ms=480, lowpass_hz=4500, voice="sad"),
+    "concerned": dict(temperature=0.70, top_p=0.94, repetition_penalty=1.20, tempo=0.90, pitch=0.985, gain=0.85, pause_ms=330, lowpass_hz=6000, voice="concerned"),
 }
 
 EMOTION_MODEL = "j-hartmann/emotion-english-distilroberta-base"
