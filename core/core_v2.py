@@ -30,6 +30,7 @@ from core.protocol import frame, FrameReader
 from core import stt
 from core import tts_client as tts
 from core.mood import MoodClassifier, MOOD_PARAMS
+from core.skills import SKILLS, STICKY_TURNS, manifest_text, route_skill
 from scripts.ingest_history import ingest_all_logs
 from memory.tasks import format_due
 
@@ -75,6 +76,8 @@ MODEL_LOCK = threading.Lock()
 # measure it against.
 TIMING_FILE = os.path.join(LOG_DIR, f"timing_{SESSION_ID}.jsonl")
 LAST_TURN_TIMING = {}
+# (skill, turns left): keeps the last turn's skill for a follow-up like "undo that".
+_SKILL_STICKY = [None, 0]
 
 # Connections currently open, so the scheduler thread can push a proactive
 # check-in to whatever browser tab(s) are live without one having just sent
@@ -845,6 +848,13 @@ def stream_skye_response(user_input: str):
         emotion_score=emotion_score, filler=None,
     )
 
+    skill = route_skill(user_input, _SKILL_STICKY[0] if _SKILL_STICKY[1] > 0 else None)
+    if skill:
+        _SKILL_STICKY[0], _SKILL_STICKY[1] = skill, STICKY_TURNS
+    else:
+        _SKILL_STICKY[1] = max(0, _SKILL_STICKY[1] - 1)
+    LAST_TURN_TIMING["skill"] = skill
+
     ack = acknowledgement_reply(user_input)
     rule_reply = ack or rule_based_response(user_input)
     if rule_reply:
@@ -860,6 +870,9 @@ def stream_skye_response(user_input: str):
     # happen, which is exactly the gap a filler should cover. handle_client
     # speaks this in a background thread the moment it sees the frame, so it
     # overlaps with generation instead of adding to the wait.
+    if skill:
+        # The browser recolours itself for the skill that is answering.
+        yield frame("skill", skill=skill, ui=SKILLS[skill]["ui"])
     filler = pick_filler(user_input, user_mood)
     if filler:
         LAST_TURN_TIMING["filler"] = filler[0]
@@ -884,6 +897,8 @@ def stream_skye_response(user_input: str):
     _t["memory"] = time.time()
 
     system_text = PERSONA
+    if skill:
+        system_text += f"\n\n[Tools for this request]\n{manifest_text(skill)}"
     if profile:
         profile_str = json.dumps(profile, ensure_ascii=False)
         system_text += f"\n[User Profile Data]: {profile_str}"
@@ -1022,7 +1037,15 @@ def stream_skye_response(user_input: str):
     else:
         # Append ONLY the model's generated narration! We never append the raw tool
         # result block into the Assistant's own mouth, otherwise it will mimic it later.
-        SHARED_MESSAGES.append({"role": "assistant", "content": final_narration})
+        # A tool turn has no narration; recording it as an empty assistant
+        # message taught the model that "empty" is what it says — after a few
+        # tool turns in a row it started answering "Undo that." with nothing.
+        # The call it actually made is the honest history, and keeps the
+        # CALL_FUNC format in view.
+        history_text = final_narration
+        if tool_name and not history_text:
+            history_text = f"CALL_FUNC: {json.dumps({'name': tool_name, 'arguments': tool_args}, ensure_ascii=False)}"
+        SHARED_MESSAGES.append({"role": "assistant", "content": history_text})
 
     _save_conversation_state()
 

@@ -11,3 +11,4 @@ logs
 __pycache__/
 *.pyc
 assets/filler_cache/
+memory/notion_undo.json

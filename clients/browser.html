@@ -137,6 +137,7 @@
     <button onclick="setMode('default')" style="color:#cc4400;">DEFAULT</button>
     <button onclick="setMode('health')"  style="color:#cc0000;">HEALTH</button>
     <button onclick="setMode('knowledge')" style="color:#0044aa;">KNOWLEDGE</button>
+    <button onclick="setMode('finance')" style="color:#0a8a4a;">FINANCE</button>
   </div>
   <div class="status-dot">
     <div class="dot" id="dot"></div>
@@ -173,7 +174,8 @@
   const PALETTES = {
     default:   { primary: new THREE.Color(0xcc4400), secondary: new THREE.Color(0xffaa44), atmosphere: new THREE.Color(0xff8844), cssPrim: '#cc4400', cssSec: '#ff6600', fog: 0xffeedd },
     health:    { primary: new THREE.Color(0xcc0000), secondary: new THREE.Color(0xff4444), atmosphere: new THREE.Color(0xff0000), cssPrim: '#cc0000', cssSec: '#ff4444', fog: 0xffdddd },
-    knowledge: { primary: new THREE.Color(0x0044aa), secondary: new THREE.Color(0x0080FF), atmosphere: new THREE.Color(0x8899ff), cssPrim: '#0044aa', cssSec: '#00aaff', fog: 0xeef4ff }
+    knowledge: { primary: new THREE.Color(0x0044aa), secondary: new THREE.Color(0x0080FF), atmosphere: new THREE.Color(0x8899ff), cssPrim: '#0044aa', cssSec: '#00aaff', fog: 0xeef4ff },
+    finance:   { primary: new THREE.Color(0x0a8a4a), secondary: new THREE.Color(0x2ee6a0), atmosphere: new THREE.Color(0x66ffaa), cssPrim: '#0a8a4a', cssSec: '#2ee6a0', fog: 0xeafff2 }
   };
   let currentTarget = PALETTES.default;
   const activeMaterials = { primary: [], secondary: [], atmosphere: [] };
@@ -380,6 +382,11 @@
   // in flight for it must be discarded until its turn_end arrives — without
   // this the remaining sentences of an interrupted reply played anyway.
   let turnActive=false, dropAudio=false;
+  let skillMode=false, revertWhenIdle=false;
+  function revertSkillMode(){
+    revertWhenIdle=false;
+    if(skillMode){ skillMode=false; if(window.setMode)window.setMode('default'); }
+  }
   // Speech that arrives while SKYE is still generating a reply: kept and sent
   // once that reply's text is done, instead of being discarded.
   let busyQueue='';
@@ -428,6 +435,13 @@
         if(window.setSkyeText)window.setSkyeText('');
         if(busyQueue){ const t=busyQueue; busyQueue=''; input.value=t; send(); }
       }
+      else if(msg.type==='skill'){
+        // A specialised skill is answering: recolour for it, switch back to
+        // default once SKYE has finished speaking (see revertSkillMode).
+        if(window.setMode)window.setMode(msg.ui||'default');
+        skillMode=!!msg.ui&&msg.ui!=='default';
+        revertWhenIdle=false;
+      }
       else if(msg.type==='mood'){
         if(window.setSkyeText)window.setSkyeText('SPEAKING - '+String(msg.mood||'calm').toUpperCase());
       }
@@ -440,6 +454,8 @@
         suppressProactiveAudio=false;
         turnActive=false;
         dropAudio=false;
+        revertWhenIdle=true;
+        if(!speaking)revertSkillMode();
       }
       else if(msg.type==='proactive'){
         // SKYE speaking first — a due task/reminder, not a reply to
@@ -660,6 +676,7 @@
     if(isFinal){
       source.onended=()=>{
         speaking=false;
+        if(revertWhenIdle)revertSkillMode();
         if(recogWanted&&!asleep)vstatus('LISTENING');
       };
     }

@@ -17,6 +17,7 @@ tools already depended on.
 import os
 import re
 import sys
+import threading
 import time
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
@@ -44,6 +45,7 @@ from mcp.server.mcpserver import MCPServer
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
+import notion_tools
 from memory.tasks import TaskStore, next_occurrence, format_due
 from memory.manager import MemoryManager
 
@@ -54,7 +56,7 @@ MEMORY = MemoryManager(ROOT)
 
 # Prefix core_v2.py keys on to know a tool result is raw material to synthesise
 # from, not a finished reply to show the user.
-WEB_SOURCES_MARKER = "[WEB SOURCES]"
+WEB_SOURCES_MARKER = notion_tools.SOURCES_MARKER
 
 mcp = MCPServer("skye-tools")
 
@@ -438,6 +440,101 @@ def get_diagnostics() -> str:
         tool_bits = [f"{name} ({t['success']} ok, {t['failure']} failed)" for name, t in tools.items()]
         parts.append("Tool reliability: " + ", ".join(tool_bits) + ".")
     return " ".join(parts)
+
+
+
+# --- Notion: finance tracker, to-do list, learning notes (see notion_tools.py) ---
+def _prewarm_notion():
+    """Builds the slow lookups (database discovery, the notes index) in the
+    background at startup — the first notes search otherwise takes ~20 s."""
+    if not os.getenv("NOTION_TOKEN"):
+        return
+    try:
+        notion_tools._databases()
+        notion_tools._categories()
+        notion_tools._notes_index()
+        print("[notion] warmed", file=sys.stderr)
+    except Exception as e:
+        print(f"[notion] prewarm failed: {e}", file=sys.stderr)
+
+
+threading.Thread(target=_prewarm_notion, daemon=True).start()
+
+
+
+def _notion(fn, *args):
+    """Runs a Notion tool; any failure becomes a spoken sentence, not a crash."""
+    try:
+        return fn(*args)
+    except notion_tools.NotionError as e:
+        print(f"[notion] {fn.__name__} failed: {e}", file=sys.stderr)
+        return "I could not reach Notion just now."
+
+
+@mcp.tool()
+def expense_summary(period: str = "", category: str = "") -> str:
+    """Total spent in a period (default this month) with a breakdown by category. period: "this month", "last month", "september", "today", "this week", "all time". category: optional, to total one category."""
+    return _notion(notion_tools.expense_summary, period, category)
+
+
+@mcp.tool()
+def list_expenses(period: str = "", category: str = "", limit: str = "5") -> str:
+    """Lists the most recent individual expenses, optionally for a period or category."""
+    return _notion(notion_tools.list_expenses, period, category, limit)
+
+
+@mcp.tool()
+def add_expense(name: str = "", amount: str = "", category: str = "", date: str = "") -> str:
+    """Logs an expense in the finance tracker. name: what it was for. amount: a number of dollars. category: e.g. Food, Rent, Transportation. date: optional, defaults to today."""
+    return _notion(notion_tools.add_expense, name, amount, category, date)
+
+
+@mcp.tool()
+def budget_status() -> str:
+    """This month's spending against each category's monthly budget."""
+    return _notion(notion_tools.budget_status)
+
+
+@mcp.tool()
+def account_balance() -> str:
+    """The current balance of the bank account in the finance tracker."""
+    return _notion(notion_tools.account_balance)
+
+
+@mcp.tool()
+def list_todos(status: str = "") -> str:
+    """Lists open items on the Notion to-do list, most urgent first. status: optional filter such as "for today" or "in progress"."""
+    return _notion(notion_tools.list_todos, status)
+
+
+@mcp.tool()
+def add_todo(name: str = "", priority: str = "Medium", status: str = "Pending") -> str:
+    """Adds an item to the Notion to-do list. priority: High, Medium or Low."""
+    return _notion(notion_tools.add_todo, name, priority, status)
+
+
+@mcp.tool()
+def update_todo(name: str = "", status: str = "", priority: str = "") -> str:
+    """Changes a Notion to-do's status (Pending, For today, In Progress, Done) or priority. name: which to-do."""
+    return _notion(notion_tools.update_todo, name, status, priority)
+
+
+@mcp.tool()
+def search_notes(query: str = "") -> str:
+    """Finds learning notes by course, notebook or title, e.g. "DSA week 3"."""
+    return _notion(notion_tools.search_notes, query)
+
+
+@mcp.tool()
+def read_note(query: str = "") -> str:
+    """Reads a learning note so it can be summarised or questioned. query: course and note title, e.g. "DSA week 3"."""
+    return _notion(notion_tools.read_note, query)
+
+
+@mcp.tool()
+def undo_last_entry() -> str:
+    """Undoes the last thing added to or changed in Notion by SKYE (an expense, a to-do)."""
+    return _notion(notion_tools.undo_last_entry)
 
 
 if __name__ == "__main__":

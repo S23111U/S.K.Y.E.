@@ -98,10 +98,12 @@ jarvis/
 │   ├── protocol.py             # Newline-delimited JSON frames (client <-> server)
 │   ├── stt.py                  # Whisper speech-to-text (MLX)
 │   ├── tts_client.py           # Talks to tts_server/ (Chatterbox Turbo voice)
-│   └── mood.py                 # Picks a speaking mood per reply
+│   ├── mood.py                 # Picks a speaking mood per reply
+│   └── skills.py               # Routes a request to a skill (its tools + UI colour)
 │
 ├── mcp_server/
-│   └── server.py               # Tool server (MCP): time, weather, alarms, web search, tasks...
+│   ├── server.py               # Tool server (MCP): time, weather, alarms, web search, tasks...
+│   └── notion_tools.py         # Notion: finance tracker, to-do list, learning notes
 │
 ├── tts_server/
 │   └── server.py               # Chatterbox Turbo TTS subprocess (runs in .venv)
@@ -154,6 +156,8 @@ pip install mlx mlx-lm sentence-transformers numpy scikit-learn tavily-python go
 python3 -m venv .venv && .venv/bin/pip install mlx-audio soundfile
 ```
 Override the interpreter with `SKYE_TTS_PYTHON`. The voice is cloned from `assets/reference_voice_short.wav` (a ~13 s slice of `reference_voice.wav`; regenerate it if you change the reference). Optional per-mood clips — `assets/reference_voice_happy.wav`, `_sad.wav`, `_concerned.wav` — are picked up automatically. The first start downloads the model.
+
+**Notion (optional).** Create an internal integration at notion.so/profile/integrations, share your pages with it (`...` → Connections), and put its secret in `.env` as `NOTION_TOKEN`. SKYE finds the finance tracker, to-do list and learning notes by name/shape, so nothing else needs configuring. `python scripts/notion_discovery.py` prints everything the integration can see. Tools are added to the model's menu per request by `core/skills.py` (finance / to-do / knowledge), and each skill recolours the UI.
 
 ### 3. Configure Environment
 Create a `.env` file in the project root:
