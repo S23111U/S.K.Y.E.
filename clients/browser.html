@@ -375,6 +375,14 @@
   const dot=document.getElementById('dot');
   const statusT=document.getElementById('status-text');
   let ws,waiting=false;
+  // turnActive: the server still owes us a turn_end (it is generating or
+  // speaking). dropAudio: we interrupted that turn, so any audio_chunk still
+  // in flight for it must be discarded until its turn_end arrives — without
+  // this the remaining sentences of an interrupted reply played anyway.
+  let turnActive=false, dropAudio=false;
+  // Speech that arrives while SKYE is still generating a reply: kept and sent
+  // once that reply's text is done, instead of being discarded.
+  let busyQueue='';
 
   input.addEventListener('input',()=>{
     input.style.height='auto';
@@ -397,7 +405,10 @@
         qaA.style.display='block';
         qaA.className='qa-answer';
         qaA.textContent='';
-        resetPlayback();
+        // No resetPlayback() here: the filler phrase is sent just before this
+        // frame, and clearing playback on 'start' cut it off after ~100 ms
+        // (found by driving the page in headless Chromium). Audio from a
+        // previous reply is cleared in send() instead.
         if(window.setSkyeText)window.setSkyeText('RESPONDING');
       }
       else if(msg.type==='token'){
@@ -415,14 +426,17 @@
         waiting=false;
         sendBtn.disabled=false;
         if(window.setSkyeText)window.setSkyeText('');
+        if(busyQueue){ const t=busyQueue; busyQueue=''; input.value=t; send(); }
       }
       else if(msg.type==='audio_chunk'){
-        if(suppressProactiveAudio)return;
+        if(suppressProactiveAudio||dropAudio)return;
         playAudioChunk(msg.pcm, msg.sample_rate||24000, !!msg.final);
       }
       else if(msg.type==='turn_end'){
         // done already updated the text/UI state; nothing else needed here.
         suppressProactiveAudio=false;
+        turnActive=false;
+        dropAudio=false;
       }
       else if(msg.type==='proactive'){
         // SKYE speaking first — a due task/reminder, not a reply to
@@ -431,6 +445,7 @@
         // fired alongside this frame, is the fallback that still reaches
         // them) rather than teaching the server about client sleep state.
         if(asleep){ suppressProactiveAudio=true; return; }
+        turnActive=true;
         qaQ.style.display='none';
         qaA.style.display='block';
         qaA.className='qa-answer';
@@ -472,6 +487,8 @@
     // NDJSON — it buffers until it sees "\n", so a message without one would
     // just sit unparsed forever.
     ws.send(JSON.stringify({type:'text', text})+'\n');
+    stopSpeaking();   // anything still playing belongs to the previous reply
+    turnActive=true; dropAudio=false;
     input.value='';
     input.style.height='auto';
     waiting=true;
@@ -493,7 +510,10 @@
   // "transcript" case in ws.onmessage) instead of continuously.
   const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski)\b[\s,.!?-]*/i;
   const CANCEL=/^\s*(?:scratch that|never ?mind|forget it|ignore that|cancel(?: that)?)\s*[.!?]*\s*$/i;
-  const STOP=/^\s*(?:(?:skye|sky)[\s,]*)?(?:stop listening|stop the mic|go to sleep|mute yourself)\s*[.!?]*\s*$/i;
+  // Matches the end of an utterance, so "Oh okay, thank you Sky. You can sleep
+  // now." works as well as a bare "go to sleep". Anchored at the end and at a
+  // clause start, so "how much sleep do I need" or "I can't sleep" do not.
+  const STOP=/(?:^|[.,!?]\s*)(?:(?:skye|sky)[\s,]*)?(?:(?:you can|please|now|go|just)\s+)*(?:stop listening|stop the mic|go to sleep|put yourself to sleep|mute yourself|sleep|stand ?by|good ?night)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky))?\s*[.!?]*\s*$/i;
   const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
   // While asleep the microphone stays live (audio still reaches local
   // Whisper); the only difference is that nothing but the wake word is acted on.
@@ -522,9 +542,38 @@
   // back for an "audio" frame. Same wake/stop/cancel/filler decisions the old
   // per-recognition-event commitSpeech() made, just triggered once per
   // utterance instead of continuously.
+  // ---- endpointing grace: don't commit a half-finished thought ----
+  // The VAD ends an utterance after VAD_SILENCE_MS of quiet, but people pause
+  // mid-sentence to think. Committing at that point sent the first half alone
+  // and (because SKYE was then busy) threw the second half away. So a finished
+  // utterance is held for a moment and merged with whatever comes next; the
+  // hold is longer when it ends on a word that clearly wants a continuation.
+  const HOLD_COMPLETE_MS=900, HOLD_DANGLING_MS=2500;
+  const DANGLING=/(?:\b(?:and|but|because|which|or|if|when|then|the|a|an|of|to|also|um+|uh+|er+|hm+)|[,;:\-]|\.{2,}|\u2026)\s*\.?\s*$/i;
+  let pendingText='', holdTimer=null;
+
+  function armHold(){
+    clearTimeout(holdTimer);
+    holdTimer=setTimeout(commitPending, DANGLING.test(pendingText)?HOLD_DANGLING_MS:HOLD_COMPLETE_MS);
+  }
+  // Re-arm after a stretch of input that turned out to be noise / too short.
+  function resumeHold(){ if(pendingText&&!holdTimer)armHold(); }
+  function clearPending(){ clearTimeout(holdTimer); holdTimer=null; pendingText=''; }
+  function commitPending(){
+    holdTimer=null;
+    const t=pendingText; pendingText='';
+    if(!t)return;
+    if(waiting){ busyQueue=busyQueue?busyQueue+' '+t:t; vstatus('QUEUED'); return; }
+    input.value=t; send();
+  }
+
+  // Runs once per VAD-captured utterance, on the transcript the server sends
+  // back for an "audio" frame. Same wake/stop/cancel/filler decisions the old
+  // per-recognition-event commitSpeech() made, just triggered once per
+  // utterance instead of continuously.
   function handleTranscript(rawText){
     let text=(rawText||'').trim();
-    if(!text)return;
+    if(!text){ resumeHold(); return; }
 
     if(asleep){
       const m=text.match(WAKE);
@@ -540,23 +589,26 @@
 
     if(STOP.test(text)){
       asleep=true;
+      clearPending(); busyQueue='';
+      interruptSpeech();
       // Ambient noise during sleep (mic stays live by design) must not glue
       // onto whatever utterance wakes SKYE back up.
       resetVadState();
       vstatus('SLEEPING - SAY "SKYE"');
       return;
     }
-    if(CANCEL.test(text)){ vstatus('CANCELLED'); return; }
+    if(CANCEL.test(text)){ clearPending(); busyQueue=''; interruptSpeech(); vstatus('CANCELLED'); return; }
 
     text=text.replace(WAKE,'').trim();                   // wake word optional
     text=trimFalseStart(text);
     // Drop stray noise and single filler words picked up between sentences.
-    if(text.replace(/[^a-z0-9]/gi,'').length<3)return;
-    if(!/\s/.test(text)&&FILLER.test(text.replace(/[^a-z0-9]/gi,'')))return;
-    if(waiting){ vstatus('BUSY - ONE MOMENT'); return; }
+    if(text.replace(/[^a-z0-9]/gi,'').length<3){ resumeHold(); return; }
+    if(!/\s/.test(text)&&FILLER.test(text.replace(/[^a-z0-9]/gi,''))){ resumeHold(); return; }
 
-    input.value=text;
-    send();
+    // Whisper closes each fragment with . or ? — drop it when a continuation follows.
+    pendingText=pendingText?pendingText.replace(/[.?!]+\s*$/,'')+' '+text:text;
+    vstatus('LISTENING...');
+    armHold();
   }
 
   // ---- playback: a Web Audio queue fed by "audio_chunk" frames ----
@@ -573,6 +625,16 @@
   function stopSpeaking(){
     speaking=false;
     resetPlayback();
+  }
+
+  // Stops audio already queued locally AND tells the server to stop
+  // synthesizing the rest of this turn's reply (barge-in, sleep, cancel).
+  function interruptSpeech(){
+    stopSpeaking();
+    if(turnActive){
+      dropAudio=true;
+      if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'cancel'})+'\n');
+    }
   }
 
   function playAudioChunk(base64pcm, sampleRate, isFinal){
@@ -678,7 +740,7 @@
     if(!chunks.length)return;
     const totalLen=chunks.reduce((a,c)=>a+c.length,0);
     const durMs=totalLen/audioContext.sampleRate*1000;
-    if(durMs<VAD_MIN_UTTERANCE_MS)return;   // too short, almost certainly noise
+    if(durMs<VAD_MIN_UTTERANCE_MS){ resumeHold(); return; }   // too short, almost certainly noise
 
     const merged=new Float32Array(totalLen);
     let off=0; for(const c of chunks){ merged.set(c,off); off+=c.length; }
@@ -705,7 +767,8 @@
           // is taking the floor, not a momentary echo leak (the
           // getUserMedia echoCancellation constraint handles the acoustic
           // side, but needs a moment to converge at the start of a session).
-          if(speaking){ stopSpeaking(); vstatus('LISTENING'); }
+          if(speaking||turnActive){ interruptSpeech(); vstatus('LISTENING'); }
+          if(holdTimer){ clearTimeout(holdTimer); holdTimer=null; }   // user is continuing: keep waiting
           vadActive=true;
           utteranceChunks=vadCandidateChunks;
           vadCandidateChunks=[]; vadCandidateBlocks=0;

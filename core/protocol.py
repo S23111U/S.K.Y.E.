@@ -24,6 +24,8 @@ Inbound (client -> server) frames
   {"type": "text",  "text": "..."}                                  typed input, or a client-confirmed transcript — triggers the LLM
   {"type": "audio", "pcm": "<base64 PCM>", "sample_rate": 16000}     a captured utterance (int16 mono PCM) — transcribed only, does NOT trigger the LLM
 
+  {"type": "cancel"}                                                  barge-in: stop speaking the current reply (synthesis halts after the sentence in progress; the turn still ends with a "turn_end")
+
 Every inbound message must be one of the above — there is no bare/unframed
 text input anymore. An "audio" frame gets exactly one "transcript" frame
 back (see below); the client decides what to do with it (wake-word/sleep/

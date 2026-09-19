@@ -10,3 +10,4 @@ logs
 # Python bytecode
 __pycache__/
 *.pyc
+assets/filler_cache/

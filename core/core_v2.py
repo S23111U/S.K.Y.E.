@@ -6,6 +6,7 @@ import base64
 import glob
 import importlib.util
 import platform
+import queue
 import random
 import socket
 import subprocess
@@ -24,11 +25,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
 
 from plyer import notification
-from helper_functions.greet import Greetings
 from clients.browser import start_http_server, open_browser, start_ws_server
 from core.protocol import frame, FrameReader
 from core import stt
-from core import tts
+from core import tts_client as tts
+from core.mood import MoodClassifier, MOOD_PARAMS
 from scripts.ingest_history import ingest_all_logs
 from memory.tasks import format_due
 
@@ -68,6 +69,13 @@ TURN_INDEX = 0
 TELEMETRY_FILE = os.path.join(LOG_DIR, f"telemetry_{SESSION_ID}.jsonl")
 MODEL_LOCK = threading.Lock()
 
+# Per-turn latency breakdown, filled in by stream_skye_response() and completed
+# (TTS times added, then written out) by _run_turn(). Exists because "replies
+# feel slower as the conversation goes on" was a feeling with nothing to
+# measure it against.
+TIMING_FILE = os.path.join(LOG_DIR, f"timing_{SESSION_ID}.jsonl")
+LAST_TURN_TIMING = {}
+
 # Connections currently open, so the scheduler thread can push a proactive
 # check-in to whatever browser tab(s) are live without one having just sent
 # a message — see _broadcast_proactive() and handle_client().
@@ -89,6 +97,7 @@ from memory.manager import MemoryManager
 from memory.tasks import TaskStore
 
 MEMORY = MemoryManager(ROOT)
+MOOD = MoodClassifier(lambda texts: MEMORY.model.encode(texts))
 TASKS = TaskStore(ROOT)
 
 # =========================================================
@@ -313,6 +322,39 @@ def personality_saturated(text: str) -> bool:
 # =========================================================
 # RAW OUTPUT SANITISATION
 # =========================================================
+WEB_SOURCES_MARKER = "[WEB SOURCES]"
+
+WEB_SYNTH_SYSTEM = (
+    "You are S.K.Y.E., a dry, precise assistant. Answer the user's question "
+    "using ONLY the numbered sources below. Sources are noisy and may disagree "
+    "or be out of date: prefer the most recent, favour facts several sources "
+    "agree on, and never fill a gap from your own memory. Every name, score "
+    "and date you state must appear in the sources. If the sources conflict "
+    "or do not cover the question, say so plainly instead of guessing. For "
+    "time-sensitive facts, say how recent the information is. Compare every event "
+    "date with today's date: an event before today has already happened and is "
+    "never 'upcoming' or 'next'; if no future fixture appears in the sources, "
+    "say none was found. Plain spoken "
+    "prose, three to five sentences, no markdown, no lists."
+)
+
+
+def synthesize_web_answer(question: str, query: str, sources: str) -> str:
+    """Second, grounded generation pass over raw web_search sources."""
+    messages = [
+        {"role": "system", "content": WEB_SYNTH_SYSTEM},
+        {"role": "user", "content": f"Question: {question}\nSearch query used: {query}\n\n{sources}"},
+    ]
+    with MODEL_LOCK:
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+        out = ""
+        for chunk in stream_generate(model, tokenizer, prompt=prompt, max_tokens=260):
+            out += chunk.text
+    return sanitise_raw(out.split("<turn|>")[0].strip())
+
+
 def sanitise_raw(text: str) -> str:
     """
     Aggressive pre-guardrail cleanup of raw model output.
@@ -425,6 +467,10 @@ with MODEL_LOCK:
     for _ in stream_generate(model, tokenizer, prompt=_warmup_prompt, max_tokens=1):
         pass
 print("✓ SKYE ONLINE\n")
+
+print("Loading TTS (Chatterbox Turbo)...")
+tts.start()
+print("✓ TTS ONLINE\n")
 
 
 # =========================================================
@@ -845,6 +891,7 @@ def stream_skye_response(user_input: str):
     # Generate
     with MODEL_LOCK:
         buffer, _raw_full, streaming, suppressed = "", "", False, False
+        _last_chunk = None
         for chunk in stream_generate(
             model,
             tokenizer,
@@ -857,6 +904,7 @@ def stream_skye_response(user_input: str):
         ):
             piece = chunk.text
             _raw_full += piece
+            _last_chunk = chunk
 
             if suppressed:
                 # Tool call: keep generating so the JSON completes and the tool
@@ -897,11 +945,19 @@ def stream_skye_response(user_input: str):
     # Tool Execution
     if tool_name:
         tool_reply = call_function_safe(tool_name, tool_args)
+        _t["tool"] = time.time()
         tool_reply_str = (
             json.dumps(tool_reply, ensure_ascii=False)
             if isinstance(tool_reply, (dict, list))
             else str(tool_reply)
         )
+
+        if tool_reply_str.startswith(WEB_SOURCES_MARKER):
+            tool_reply_str = synthesize_web_answer(
+                user_input, (tool_args or {}).get("query", user_input), tool_reply_str
+            )
+            final_narration = ""
+        _t["synth"] = time.time()
 
         # Merge narration and result for USER display
         if final_narration:
@@ -947,6 +1003,24 @@ def stream_skye_response(user_input: str):
         f"prompt_tokens ~{len(prompt)//4} | out_tokens ~{len(_raw_full)//4}"
     )
 
+    _end = time.time()
+    _tool_end = _t.get("tool", _t["generate"])
+    LAST_TURN_TIMING.clear()
+    LAST_TURN_TIMING.update(
+        turn=TURN_INDEX - 1,
+        tool=tool_name,
+        history_msgs=len(SHARED_MESSAGES),
+        prompt_tokens=getattr(_last_chunk, "prompt_tokens", None),
+        prompt_tps=round(getattr(_last_chunk, "prompt_tps", 0) or 0, 1),
+        gen_tokens=getattr(_last_chunk, "generation_tokens", None),
+        gen_tps=round(getattr(_last_chunk, "generation_tps", 0) or 0, 1),
+        memory_ms=round((_t["memory"] - _t["start"]) * 1000),
+        generate_ms=round((_t["generate"] - _t["memory"]) * 1000),
+        tool_ms=round((_tool_end - _t["generate"]) * 1000),
+        web_synth_ms=round((_t["synth"] - _tool_end) * 1000) if "synth" in _t else 0,
+        total_llm_ms=round((_end - _t["start"]) * 1000),
+    )
+
     yield frame("done", text=final_output)
 
 
@@ -960,13 +1034,25 @@ def get_skye_response(user_input: str) -> str:
     return final
 
 
+def greeting() -> str:
+    """Time-of-day greeting for the rule-based fast path ("hi skye")."""
+    hour = datetime.now().hour
+    if hour == 0 or hour > 22:
+        return "It's quite late, Good Evening Sir"
+    if hour < 12:
+        return "Good Morning, Sir"
+    if hour <= 15:
+        return "Good Afternoon, Sir"
+    return "Good Evening, Sir"
+
+
 def rule_based_response(speech: str):
     s = speech.lower()
     if any(
         g in s
         for g in ["hi skye", "hello skye", "good morning skye", "good evening skye"]
     ):
-        return Greetings()
+        return greeting()
     if s.startswith("open "):
         target = s.split("open ", 1)[1].strip()
         sites = {
@@ -1012,26 +1098,28 @@ def start_cli_mode():
     print(f"\nTelemetry saved to logs/telemetry_{SESSION_ID}.jsonl\nSystems OFFLINE.")
 
 
-def _speak_filler(conn, send_lock, phrase):
-    """Synthesizes and sends a filler phrase's audio in the background.
+def _speak_filler(conn, send_lock, phrase, cancel):
+    """Sends a filler phrase's (pre-synthesized, cached) audio in the background.
 
-    Runs on its own thread so it overlaps with LLM generation on the main
-    connection thread instead of adding to the wait before it. The two
-    threads share one socket, so every send is serialized through
-    `send_lock` — each frame() call is still written whole, just never
-    interleaved byte-for-byte with a frame from the other thread.
+    The audio comes from tts.cached_phrase(), so this costs no GPU while the
+    LLM is generating — it used to run TTS concurrently with generation and
+    slow both. Still on its own thread so the (small) disk read and socket
+    write never delay the main turn. Every send goes through `send_lock` so a
+    frame is never interleaved byte-for-byte with one from the turn thread.
     """
     try:
-        for pcm, _ in tts.synthesize_reply(phrase, speed_range=(1.0, 1.12)):
-            with send_lock:
-                conn.sendall(
-                    frame(
-                        "audio_chunk",
-                        pcm=base64.b64encode(pcm).decode("ascii"),
-                        sample_rate=24000,
-                        final=False,
-                    )
+        pcm = tts.cached_phrase(phrase)
+        if cancel.is_set():
+            return
+        with send_lock:
+            conn.sendall(
+                frame(
+                    "audio_chunk",
+                    pcm=base64.b64encode(pcm).decode("ascii"),
+                    sample_rate=24000,
+                    final=False,
                 )
+            )
     except Exception as e:
         print(f"[Filler TTS error]: {e}")
 
@@ -1080,60 +1168,129 @@ def handle_client(conn):
                 ACTIVE_CONNECTIONS.remove((conn, send_lock))
 
 
-def _handle_client_loop(conn, reader, send_lock):
-    with conn, mx.stream(MLX_STREAM):
-        while True:
-            data = conn.recv(4096)
-            if not data:
-                break
-            for msg in reader.feed(data):
-                if msg.get("type") == "text":
-                    user_speech = msg.get("text", "").strip()
-                elif msg.get("type") == "audio":
-                    pcm = base64.b64decode(msg["pcm"])
-                    transcript = stt.transcribe_pcm(
-                        pcm, sample_rate=msg.get("sample_rate", 16000)
-                    ).strip()
-                    with send_lock:
-                        conn.sendall(frame("transcript", text=transcript))
-                    continue
-                else:
-                    continue
-                if not user_speech:
-                    continue
+def _run_turn(conn, send_lock, user_speech, cancel):
+    """One full turn: LLM (+ tools), then speech. `cancel` is set when the user
+    barges in or sends a newer request; it stops speech synthesis between
+    audio chunks (generation itself always completes, so conversation state is
+    never left half-written)."""
+    print(f"[Client]: {user_speech}")
+    t_turn = time.time()
+    reply = ""
+    for f in stream_skye_response(user_speech):
+        with send_lock:
+            conn.sendall(f)
+        payload = json.loads(f.decode())
+        if payload["type"] == "filler":
+            threading.Thread(
+                target=_speak_filler,
+                args=(conn, send_lock, payload["text"], cancel),
+                daemon=True,
+            ).start()
+        elif payload["type"] == "done":
+            reply = payload["text"]
 
-                print(f"[Client]: {user_speech}")
+    timing = dict(LAST_TURN_TIMING)
+    tts_t, first_audio_ms, chunks, mood = {}, None, 0, None
+    if reply.strip() and not cancel.is_set():
+        mood = MOOD.classify(user_speech, reply)
+        for pcm, is_final in tts.synthesize_reply(
+            reply, params=MOOD_PARAMS[mood], cancel=cancel, timings=tts_t
+        ):
+            if cancel.is_set():
+                break
+            if first_audio_ms is None:
+                first_audio_ms = round((time.time() - t_turn) * 1000)
+            chunks += 1
+            with send_lock:
+                conn.sendall(
+                    frame(
+                        "audio_chunk",
+                        pcm=base64.b64encode(pcm).decode("ascii"),
+                        sample_rate=24000,
+                        final=is_final,
+                    )
+                )
+    # Always closes the turn — including a cancelled one, so the client knows
+    # to stop discarding audio and the next turn's chunks aren't dropped.
+    with send_lock:
+        conn.sendall(frame("turn_end"))
+
+    timing.update(
+        cancelled=cancel.is_set(),
+        mood=mood,
+        tts_first_chunk_ms=tts_t.get("first_chunk_ms"),
+        tts_total_ms=tts_t.get("total_ms"),
+        tts_chunks_sent=chunks,
+        first_audio_ms=first_audio_ms,
+        turn_total_ms=round((time.time() - t_turn) * 1000),
+    )
+    try:
+        with open(TIMING_FILE, "a") as tf:
+            tf.write(json.dumps(timing) + "\n")
+    except OSError:
+        pass
+    print(f"[Reply{' (cancelled)' if cancel.is_set() else ''}]: {reply}")
+
+
+def _handle_client_loop(conn, reader, send_lock):
+    """Reads frames continuously on this thread while turns run on a worker.
+
+    Previously one thread did both: it read a message, ran the whole turn
+    (LLM *and* synthesizing every sentence), and only then read the next
+    message. So a barge-in's audio sat unread until the old reply had finished
+    synthesizing, and the interrupted reply kept synthesizing (and being sent)
+    after the user had already started talking. Now this thread only reads —
+    audio is transcribed and 'cancel'/'text' frames are acted on immediately —
+    and turns are queued to a single worker so they still run one at a time.
+    """
+    turns = queue.Queue()
+    state = {"cancel": threading.Event()}
+
+    def worker():
+        with mx.stream(MLX_STREAM):
+            while True:
+                item = turns.get()
+                if item is None:
+                    return
+                text, cancel = item
                 try:
-                    reply = ""
-                    for f in stream_skye_response(user_speech):
-                        with send_lock:
-                            conn.sendall(f)
-                        payload = json.loads(f.decode())
-                        if payload["type"] == "filler":
-                            threading.Thread(
-                                target=_speak_filler,
-                                args=(conn, send_lock, payload["text"]),
-                                daemon=True,
-                            ).start()
-                        elif payload["type"] == "done":
-                            reply = payload["text"]
-                    if reply.strip():
-                        for pcm, is_final in tts.synthesize_reply(reply):
-                            with send_lock:
-                                conn.sendall(
-                                    frame(
-                                        "audio_chunk",
-                                        pcm=base64.b64encode(pcm).decode("ascii"),
-                                        sample_rate=24000,
-                                        final=is_final,
-                                    )
-                                )
-                    with send_lock:
-                        conn.sendall(frame("turn_end"))
-                    print(f"[Reply]: {reply}")
+                    _run_turn(conn, send_lock, text, cancel)
                 except Exception as e:
                     print(f"[Socket send error]: {e}")
                     return
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    try:
+        with conn, mx.stream(MLX_STREAM):
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                for msg in reader.feed(data):
+                    kind = msg.get("type")
+                    if kind == "cancel":
+                        # Barge-in: stop speaking the current reply.
+                        state["cancel"].set()
+                    elif kind == "audio":
+                        pcm = base64.b64decode(msg["pcm"])
+                        transcript = stt.transcribe_pcm(
+                            pcm, sample_rate=msg.get("sample_rate", 16000)
+                        ).strip()
+                        with send_lock:
+                            conn.sendall(frame("transcript", text=transcript))
+                    elif kind == "text":
+                        user_speech = msg.get("text", "").strip()
+                        if not user_speech:
+                            continue
+                        # A new request supersedes whatever is still being
+                        # spoken from the previous one.
+                        state["cancel"].set()
+                        state["cancel"] = threading.Event()
+                        turns.put((user_speech, state["cancel"]))
+    finally:
+        state["cancel"].set()
+        turns.put(None)
 
 
 def start_server_mode():
@@ -1150,6 +1307,13 @@ def start_server_mode():
         print(f"[Bridge Error]: Could not automatically open browser UI: {bridge_err}")
 
     threading.Thread(target=_scheduler_loop, daemon=True).start()
+
+    # Synthesize every filler phrase now (a no-op once cached on disk) so the
+    # first one a user triggers is instant instead of waiting on the engine.
+    threading.Thread(
+        target=lambda: [tts.cached_phrase(p) for p in FILLER_ACK + FILLER_THINKING],
+        daemon=True,
+    ).start()
 
     with socket.socket() as server_socket:
         server_socket.bind((HOST, PORT))

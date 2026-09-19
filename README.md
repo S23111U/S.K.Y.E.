@@ -24,7 +24,7 @@ S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine b
 
 | Capability | Status |
 |---|---|
-| 🔍 Web Search (Wikipedia + Gemini fallback) | ✅ Live |
+| 🔍 Web Search (Tavily, feeds long-term memory) | ✅ Live |
 | 🌤️ Live Weather | ✅ Live |
 | 📰 News Summarisation | ✅ Live |
 | ⏰ Alarms & Reminders | ✅ Live |
@@ -94,7 +94,17 @@ Phase 2 │ Semantic Ingestion   → ingest_history.py   → indexes logs into m
 jarvis/
 │
 ├── core/
-│   └── core_v2.py              # Main production engine (Socket Server + CLI)
+│   ├── core_v2.py              # Main production engine (Socket Server + CLI)
+│   ├── protocol.py             # Newline-delimited JSON frames (client <-> server)
+│   ├── stt.py                  # Whisper speech-to-text (MLX)
+│   ├── tts_client.py           # Talks to tts_server/ (Chatterbox Turbo voice)
+│   └── mood.py                 # Picks a speaking mood per reply
+│
+├── mcp_server/
+│   └── server.py               # Tool server (MCP): time, weather, alarms, web search, tasks...
+│
+├── tts_server/
+│   └── server.py               # Chatterbox Turbo TTS subprocess (runs in .venv)
 │
 ├── prompts/
 │   └── skye_persona.txt        # The personality. Loaded as the system message.
@@ -115,7 +125,6 @@ jarvis/
 │   ├── browser.py              # HTTP + WebSocket bridge to the socket server
 │   └── browser.html            # Browser UI
 │
-├── helper_functions/           # Tool implementations (weather, news, alarms...)
 └── logs/                       # Session telemetry JSONL files (gitignored)
 ```
 
@@ -137,8 +146,14 @@ pyenv shell jarvis-py311
 
 ### 2. Install Dependencies
 ```bash
-pip install mlx mlx-lm sentence-transformers numpy scikit-learn wikipedia google-generativeai python-dotenv
+pip install mlx mlx-lm sentence-transformers numpy scikit-learn tavily-python google-generativeai python-dotenv
 ```
+
+**Voice (TTS) runs in its own environment.** Chatterbox Turbo (via `mlx-audio`) needs a newer `mlx` than the LLM's pinned runtime, so `tts_server/` is spawned as a subprocess using the repo's `.venv`:
+```bash
+python3 -m venv .venv && .venv/bin/pip install mlx-audio soundfile
+```
+Override the interpreter with `SKYE_TTS_PYTHON`. The voice is cloned from `assets/reference_voice_short.wav` (a ~13 s slice of `reference_voice.wav`; regenerate it if you change the reference). Optional per-mood clips — `assets/reference_voice_happy.wav`, `_sad.wav`, `_concerned.wav` — are picked up automatically. The first start downloads the model.
 
 ### 3. Configure Environment
 Create a `.env` file in the project root:
