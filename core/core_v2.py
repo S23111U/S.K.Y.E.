@@ -208,15 +208,7 @@ QUESTION_LEAD_RE = re.compile(
 # almost instantly — there's no gap for a filler to fill, so one would land
 # after the real reply instead of before it.
 FILLER_MIN_WORDS = 4
-# Minimum turns that must pass before a *conversational* filler can fire
-# again (tool-bound requests are exempt — those pauses are real every time).
-# This is what actually stops the "randomly appearing" feel: a filler at
-# every turn is a tic, one every third or so is closer to how backchannel
-# actually happens.
-FILLER_COOLDOWN_TURNS = 1
-
 _last_filler = None
-_last_filler_turn = -FILLER_COOLDOWN_TURNS
 
 
 def pick_filler(user_input: str, mood: str = "calm"):
@@ -229,7 +221,7 @@ def pick_filler(user_input: str, mood: str = "calm"):
     questions, and often for longer statements. The only brake is not repeating
     a plain "let me check" filler on consecutive turns.
     """
-    global _last_filler, _last_filler_turn
+    global _last_filler
 
     words = user_input.split()
     lower = user_input.lower()
@@ -237,28 +229,29 @@ def pick_filler(user_input: str, mood: str = "calm"):
     is_question = user_input.rstrip().endswith("?") or bool(QUESTION_LEAD_RE.match(user_input))
     emotional = mood != "calm"
 
+    # Probabilities (were 1.0 / 1.0 / 0.85 / 0.6, which put a filler on ~89% of
+    # turns in a real session and started to sound like a tic). These give ~68%
+    # on the same session: still highest where the pause is real (tools) or the
+    # beat matters (emotion), and lower for plain statements.
     if emotional:
         if len(words) < 2:
             return None
-        probability = 1.0
-    elif is_tool_like:
-        probability = 1.0
-    elif is_question and len(words) >= 3:
         probability = 0.85
+    elif is_tool_like:
+        probability = 0.9
+    elif is_question and len(words) >= 3:
+        probability = 0.7
     elif len(words) >= FILLER_MIN_WORDS:
-        probability = 0.6
+        probability = 0.5
     else:
         return None
 
-    if not (emotional or is_tool_like) and TURN_INDEX - _last_filler_turn < FILLER_COOLDOWN_TURNS:
-        return None
     if random.random() > probability:
         return None
 
     pool = FILLERS[mood]
     choices = [f for f in pool if f != _last_filler] or pool
     _last_filler = random.choice(choices)
-    _last_filler_turn = TURN_INDEX
     return _last_filler, mood
 
 
@@ -490,6 +483,22 @@ with MODEL_LOCK:
         pass
 print("✓ SKYE ONLINE\n")
 
+
+def _warm_llm():
+    """One throwaway generation with a realistic (persona-sized) prompt, so the
+    first real reply doesn't pay for cold Metal kernels — the very first turn of
+    a session took 22 s against ~2 s afterwards."""
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "system", "content": PERSONA}, {"role": "user", "content": "hello"}],
+        tokenize=False, add_generation_prompt=True, enable_thinking=False,
+    )
+    with MODEL_LOCK, mx.stream(MLX_STREAM):
+        for _ in stream_generate(model, tokenizer, prompt=prompt, max_tokens=12):
+            pass
+
+
+_warm_llm()
+
 print("Loading TTS (Chatterbox Turbo)...")
 tts.start()
 print("✓ TTS ONLINE\n")
@@ -582,8 +591,39 @@ def _run_diagnostics_pass(log_files):
     return report
 
 
+TIMING_RETENTION_DAYS = 14
+TTS_LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _prune_logs():
+    """Housekeeping for diagnostic-only files. timing_*.jsonl (per-turn latency
+    breakdowns) is read by nothing in SKYE — only by a human debugging — so it
+    is deleted after two weeks; telemetry_*.jsonl is NOT touched (memory
+    ingestion and fact extraction read it). The TTS subprocess log is trimmed
+    to its last 200 KB once it passes 2 MB."""
+    try:
+        cutoff = time.time() - TIMING_RETENTION_DAYS * 86400
+        for f in glob.glob(os.path.join(LOG_DIR, "timing_*.jsonl")):
+            if os.path.getmtime(f) < cutoff:
+                os.remove(f)
+        tts_log = os.path.join(LOG_DIR, "tts_server.log")
+        if os.path.isfile(tts_log) and os.path.getsize(tts_log) > TTS_LOG_MAX_BYTES:
+            with open(tts_log, "r+b") as fh:   # the writer appends, so truncating is safe
+                fh.seek(-200 * 1024, os.SEEK_END)
+                tail = fh.read()
+                fh.seek(0)
+                fh.truncate()
+                fh.write(tail)
+    except OSError as e:
+        print(f"[Scheduler]: log pruning skipped: {e}")
+
+
+_prune_logs()   # also at boot: the nightly job only runs if SKYE is up at that hour
+
+
 def _run_daily_consolidation():
     print("[Scheduler]: Running nightly memory consolidation...")
+    _prune_logs()
     try:
         # Captured before run_fact_extraction moves these files into
         # processed_logs/, so diagnostics analyzes the same batch fact
@@ -1092,10 +1132,18 @@ def get_skye_response(user_input: str) -> str:
     return final
 
 
-ACK_RE = re.compile(
+# Thanks-type phrases are unambiguous, so a short sentence containing one is an
+# acknowledgement. Bare approval words ("okay", "great") are not: "Okay there are
+# a few corrections" is the start of a request, so they only count when they
+# are the whole message.
+THANKS_RE = re.compile(
     r"\b(?:thank(?:s| you)|cheers|much appreciated|appreciate (?:it|that)|"
-    r"(?:that'?s|that is|sounds|it'?s) (?:great|good|perfect|fine|interesting|helpful|brilliant|superb)|"
-    r"(?:ok|okay|alright|got it|understood|superb|perfect|brilliant|excellent|awesome|cool|nice))\b",
+    r"(?:that'?s|that is|sounds|it'?s) (?:great|good|perfect|fine|interesting|helpful|brilliant|superb))\b",
+    re.IGNORECASE,
+)
+APPROVAL_ONLY_RE = re.compile(
+    r"^\W*(?:(?:ok|okay|alright|all right|got it|understood|superb|perfect|brilliant|excellent|awesome|cool|nice|great|"
+    r"fair enough|sounds good)\W*)+(?:(?:skye|sky|sir)\W*)?$",
     re.IGNORECASE,
 )
 # Anything that makes it a request rather than a bare acknowledgement.
@@ -1114,7 +1162,9 @@ def acknowledgement_reply(speech: str):
     attached to the message — dutifully recapped the last answer instead of
     just replying. Handling them here also makes them instant.
     """
-    if len(speech.split()) > 8 or ACK_BLOCK_RE.search(speech) or not ACK_RE.search(speech):
+    if APPROVAL_ONLY_RE.match(speech):
+        return random.choice(ACK_REPLIES)
+    if len(speech.split()) > 8 or ACK_BLOCK_RE.search(speech) or not THANKS_RE.search(speech):
         return None
     return random.choice(ACK_REPLIES)
 

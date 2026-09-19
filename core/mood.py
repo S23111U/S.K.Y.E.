@@ -41,8 +41,22 @@ MOOD_PARAMS = {
 
 EMOTION_MODEL = "j-hartmann/emotion-english-distilroberta-base"
 
-# Emotion labels need to clear these confidence levels to change the mood.
-JOY_MIN, SAD_MIN, UPSET_MIN = 0.45, 0.50, 0.55
+# Emotion labels need to clear these confidence levels to change the mood...
+JOY_MIN, SAD_MIN, UPSET_MIN = 0.55, 0.60, 0.55
+# ...and, because the model over-reads plain statements ("I'm doing my master's
+# degree" scored joy 0.91; a neutral remark about the rental market scored
+# sadness 0.75), the wording has to carry a recognisable cue as well.
+JOY_CUE = re.compile(
+    r"!|\b(?:thank|thanks|great|wonderful|awesome|amazing|love|happy|glad|excellent|fantastic|"
+    r"brilliant|superb|perfect|congrat\w*|good news|good to hear|nice|finished|completed|passed|"
+    r"won|got the job|delighted|excited)\b", re.IGNORECASE)
+SAD_CUE = re.compile(
+    r"\b(?:sad|sorry|unfortunately|cancel\w*|missed|lost|passed away|died|failed|bad news|terrible|"
+    r"awful|depress\w*|upset|disappoint\w*|heartbroken|miss(?:ing)? (?:him|her|home)|grie\w*)\b",
+    re.IGNORECASE)
+UPSET_CUE = re.compile(
+    r"\b(?:frustrat\w*|angry|annoy\w*|upset|worried|anxious|confus\w*|stress\w*|stuck|hate|"
+    r"biased|wrong|broken|useless|ridiculous|nervous|scared)\b", re.IGNORECASE)
 # Questions and commands are usually neutral even when the classifier wobbles
 # ("set an alarm for 7 AM" scored fear 0.50), so they need much more evidence.
 INSTRUCTION_MIN = 0.80
@@ -85,13 +99,13 @@ class MoodClassifier:
         instruction = bool(INSTRUCTION_RE.match(text))
         strict = INSTRUCTION_MIN if instruction else None
 
-        if joy >= (strict or JOY_MIN) or (
+        if (joy >= (strict or JOY_MIN) and JOY_CUE.search(text)) or (
             sur >= 0.70 and joy >= 0.08 and text.rstrip().endswith("!") and not instruction
         ):
             mood = "happy"
-        elif sad >= (strict or SAD_MIN):
+        elif sad >= (strict or SAD_MIN) and SAD_CUE.search(text):
             mood = "sad"
-        elif upset >= (strict or UPSET_MIN):
+        elif upset >= (strict or UPSET_MIN) and UPSET_CUE.search(text):
             mood = "concerned"
         elif CONFUSED_RE.search(text):
             mood = "concerned"

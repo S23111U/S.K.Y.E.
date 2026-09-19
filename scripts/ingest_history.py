@@ -25,7 +25,7 @@ def ingest_all_logs(memory: MemoryManager = None):
 
     if memory is None:
         memory = MemoryManager(ROOT)
-    log_files = glob.glob(os.path.join(ROOT, "logs", "*.jsonl")) + glob.glob(os.path.join(ROOT, "logs", "processed_logs", "*.jsonl"))
+    log_files = glob.glob(os.path.join(ROOT, "logs", "telemetry_*.jsonl")) + glob.glob(os.path.join(ROOT, "logs", "processed_logs", "telemetry_*.jsonl"))
     
     if not log_files:
         print("[MLOps]: No logs found to ingest.")

@@ -10,13 +10,13 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --primary-color: #cc4400;
-      --secondary-color: #ff6600;
+      --primary-color: #1e88c8;
+      --secondary-color: #4dbdf5;
       --success: #22c55e;
       --danger: #ef4444;
     }
 
-    body { margin: 0; overflow: hidden; background: #fffbf4; font-family: 'Orbitron', sans-serif; transition: background-color 1s ease; }
+    body { margin: 0; overflow: hidden; background: #f6fbff; font-family: 'Orbitron', sans-serif; transition: background-color 1s ease; }
     canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; }
 
     /* ── Top bar ── */
@@ -24,17 +24,10 @@
       position: absolute; top: 0; left: 0; right: 0; z-index: 20;
       display: flex; align-items: center; justify-content: space-between;
       padding: 18px 28px;
-      background: linear-gradient(to bottom, rgba(255,251,244,0.7) 0%, transparent 100%);
+      background: linear-gradient(to bottom, rgba(246,251,255,0.7) 0%, transparent 100%);
       backdrop-filter: blur(4px);
     }
     #header-text { color: var(--primary-color); font-size: 18px; letter-spacing: 8px; font-weight: 400; transition: color 1s ease; }
-    #mode-btns { display: flex; gap: 8px; }
-    #mode-btns button {
-      background: none; border: 1px solid currentColor; padding: 5px 12px;
-      font-family: 'Share Tech Mono', monospace; font-size: 11px; cursor: pointer;
-      letter-spacing: 1px; transition: all 0.2s;
-    }
-    #mode-btns button:hover { color: white !important; }
 
     .status-dot { display: flex; align-items: center; gap: 7px; font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--primary-color); }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); transition: background 0.4s; }
@@ -86,7 +79,7 @@
     }
     .qa-question {
       font-family: 'Share Tech Mono', monospace; font-size: 13px;
-      color: rgba(204,68,0,0.55); letter-spacing: 2px; text-transform: uppercase;
+      color: color-mix(in srgb, var(--primary-color) 55%, transparent); letter-spacing: 2px; text-transform: uppercase;
       animation: fade-up 0.2s ease;
     }
     .qa-question::before { content: '> '; opacity: 0.5; }
@@ -104,19 +97,19 @@
     #input-bar {
       position: absolute; bottom: 0; left: 0; right: 0; z-index: 20;
       display: flex; gap: 8px; padding: 14px 40px 20px; align-items: flex-end;
-      background: linear-gradient(to top, rgba(255,251,244,0.6) 0%, transparent 100%);
+      background: linear-gradient(to top, rgba(246,251,255,0.6) 0%, transparent 100%);
     }
     #msg-input {
-      flex: 1; background: transparent; border: none; border-bottom: 1px solid rgba(204,68,0,0.35);
-      border-radius: 0; padding: 8px 0; color: #331100;
+      flex: 1; background: transparent; border: none; border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+      border-radius: 0; padding: 8px 0; color: #0b2a3d;
       font-family: 'Share Tech Mono', monospace; font-size: 14px; letter-spacing: 2px;
       resize: none; max-height: 60px; outline: none; transition: border-color 0.2s;
       text-transform: uppercase;
     }
     #msg-input:focus { border-bottom-color: var(--primary-color); }
-    #msg-input::placeholder { color: rgba(204,68,0,0.3); }
+    #msg-input::placeholder { color: color-mix(in srgb, var(--primary-color) 30%, transparent); }
     #send-btn {
-      width: 32px; height: 32px; border-radius: 0; border: 1px solid rgba(204,68,0,0.4);
+      width: 32px; height: 32px; border-radius: 0; border: 1px solid color-mix(in srgb, var(--primary-color) 40%, transparent);
       background: transparent; cursor: pointer; flex-shrink: 0;
       display: flex; align-items: center; justify-content: center;
       transition: all 0.2s;
@@ -133,12 +126,6 @@
 <!-- Top bar -->
 <div id="top-bar">
   <div id="header-text">S.K.Y.E.</div>
-  <div id="mode-btns">
-    <button onclick="setMode('default')" style="color:#cc4400;">DEFAULT</button>
-    <button onclick="setMode('health')"  style="color:#cc0000;">HEALTH</button>
-    <button onclick="setMode('knowledge')" style="color:#0044aa;">KNOWLEDGE</button>
-    <button onclick="setMode('finance')" style="color:#0a8a4a;">FINANCE</button>
-  </div>
   <div class="status-dot">
     <div class="dot" id="dot"></div>
     <span id="status-text" style="font-family:'Share Tech Mono',monospace;font-size:11px;">OFFLINE</span>
@@ -172,7 +159,7 @@
 
   // ── PALETTES ──
   const PALETTES = {
-    default:   { primary: new THREE.Color(0xcc4400), secondary: new THREE.Color(0xffaa44), atmosphere: new THREE.Color(0xff8844), cssPrim: '#cc4400', cssSec: '#ff6600', fog: 0xffeedd },
+    default:   { primary: new THREE.Color(0x1e88c8), secondary: new THREE.Color(0x6fcbff), atmosphere: new THREE.Color(0x8fd8ff), cssPrim: '#1e88c8', cssSec: '#4dbdf5', fog: 0xeaf6ff },
     health:    { primary: new THREE.Color(0xcc0000), secondary: new THREE.Color(0xff4444), atmosphere: new THREE.Color(0xff0000), cssPrim: '#cc0000', cssSec: '#ff4444', fog: 0xffdddd },
     knowledge: { primary: new THREE.Color(0x0044aa), secondary: new THREE.Color(0x0080FF), atmosphere: new THREE.Color(0x8899ff), cssPrim: '#0044aa', cssSec: '#00aaff', fog: 0xeef4ff },
     finance:   { primary: new THREE.Color(0x0a8a4a), secondary: new THREE.Color(0x2ee6a0), atmosphere: new THREE.Color(0x66ffaa), cssPrim: '#0a8a4a', cssSec: '#2ee6a0', fog: 0xeafff2 }
@@ -182,7 +169,7 @@
 
   // ── THREE SETUP ──
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0xffeedd, 0.02);
+  scene.fog = new THREE.FogExp2(0xeaf6ff, 0.02);
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.z = 35;
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -532,7 +519,7 @@
   // Matches the end of an utterance, so "Oh okay, thank you Sky. You can sleep
   // now." works as well as a bare "go to sleep". Anchored at the end and at a
   // clause start, so "how much sleep do I need" or "I can't sleep" do not.
-  const STOP=/(?:^|[.,!?]\s*)(?:(?:skye|sky)[\s,]*)?(?:(?:you can|please|now|go|just)\s+)*(?:stop listening|stop the mic|go to sleep|put yourself to sleep|mute yourself|sleep|stand ?by|good ?night)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky))?\s*[.!?]*\s*$/i;
+  const STOP=/(?:^|[.,!?]\s*)(?:(?:i think|i guess|i suppose|okay|ok|so|well|alright|right|and)[\s,]+)*(?:(?:skye|sky)[\s,]*)?(?:(?:you can|you could|please|now|go|just|can)\s+)*(?:stop listening|stop the mic|go to sleep|put yourself to sleep|mute yourself|sleep|stand ?by|good ?night)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky))?\s*[.!?]*\s*$/i;
   const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
   // While asleep the microphone stays live (audio still reaches local
   // Whisper); the only difference is that nothing but the wake word is acted on.

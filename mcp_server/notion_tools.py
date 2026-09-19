@@ -426,7 +426,8 @@ def list_expenses(period="", category="", limit="5"):
     if not rows:
         return "There are no matching expenses."
     parts = [f"{r['name']}, {_money(r['amount'])}, {_day(r['date'])}, {r['category']}" for r in rows]
-    return f"Your latest {len(rows)} expense{'s' if len(rows) != 1 else ''}: " + "; ".join(parts) + "."
+    lead = "Your latest expense" if len(rows) == 1 else f"Your latest {len(rows)} expenses"
+    return f"{lead}: " + "; ".join(parts) + "."
 
 
 def budget_status():
