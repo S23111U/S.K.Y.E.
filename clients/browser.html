@@ -428,6 +428,9 @@
         if(window.setSkyeText)window.setSkyeText('');
         if(busyQueue){ const t=busyQueue; busyQueue=''; input.value=t; send(); }
       }
+      else if(msg.type==='mood'){
+        if(window.setSkyeText)window.setSkyeText('SPEAKING - '+String(msg.mood||'calm').toUpperCase());
+      }
       else if(msg.type==='audio_chunk'){
         if(suppressProactiveAudio||dropAudio)return;
         playAudioChunk(msg.pcm, msg.sample_rate||24000, !!msg.final);
@@ -629,11 +632,11 @@
 
   // Stops audio already queued locally AND tells the server to stop
   // synthesizing the rest of this turn's reply (barge-in, sleep, cancel).
-  function interruptSpeech(){
+  function interruptSpeech(info){
     stopSpeaking();
     if(turnActive){
       dropAudio=true;
-      if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'cancel'})+'\n');
+      if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(Object.assign({type:'cancel'},info||{}))+'\n');
     }
   }
 
@@ -675,7 +678,7 @@
   // referencing it here as a bare identifier resolves via the global object.
   let captureProcessor=null;
   let utteranceChunks=[], vadActive=false, vadSilenceStartMs=null;
-  let vadCandidateChunks=[], vadCandidateBlocks=0;
+  let vadCandidateChunks=[], vadCandidateBlocks=0, lastSpeechRms=0;
   const VAD_ENERGY_THRESHOLD=0.015;
   const VAD_SILENCE_MS=800;
   const VAD_MIN_UTTERANCE_MS=300;
@@ -685,6 +688,14 @@
   // for one block. Require this many consecutive speech-classified blocks
   // (~130-150ms at a 2048-sample block size) before committing.
   const VAD_CONFIRM_BLOCKS=3;
+  // While SKYE itself is speaking, its own voice can leak back into the mic
+  // even with echoCancellation on. That looked like the user talking and
+  // cancelled the reply (and the short filler phrase, ~150 ms in). So an
+  // interruption over SKYE's voice needs a louder, longer signal than starting
+  // a fresh utterance. Each cancel reports its level to the server's
+  // telemetry (cancel_info in logs/timing_*.jsonl) so these can be tuned.
+  const VAD_BARGE_ENERGY=0.04;
+  const VAD_BARGE_CONFIRM_BLOCKS=5;
   // Without a hard cap, an utterance that never gets a full silence gap
   // (e.g. background noise during "asleep", where the mic stays live by
   // design) accumulates forever and corrupts whatever comes next. Force a
@@ -754,7 +765,11 @@
   }
 
   function handleAudioBlock(data){
-    const isSpeech=rms(data)>VAD_ENERGY_THRESHOLD;
+    const level=rms(data);
+    const overSkye=speaking&&!vadActive;   // could be an echo of SKYE's own voice
+    const isSpeech=level>(overSkye?VAD_BARGE_ENERGY:VAD_ENERGY_THRESHOLD);
+    const needBlocks=overSkye?VAD_BARGE_CONFIRM_BLOCKS:VAD_CONFIRM_BLOCKS;
+    if(isSpeech)lastSpeechRms=Math.max(lastSpeechRms,level);
     if(isSpeech){
       if(!vadActive){
         // Not yet a confirmed utterance — buffer as a candidate so the
@@ -762,12 +777,12 @@
         // in) until speech has actually been sustained for a few blocks.
         vadCandidateChunks.push(new Float32Array(data));
         vadCandidateBlocks++;
-        if(vadCandidateBlocks>=VAD_CONFIRM_BLOCKS){
+        if(vadCandidateBlocks>=needBlocks){
           // Barge-in: speech sustained while SKYE is talking means the user
           // is taking the floor, not a momentary echo leak (the
           // getUserMedia echoCancellation constraint handles the acoustic
           // side, but needs a moment to converge at the start of a session).
-          if(speaking||turnActive){ interruptSpeech(); vstatus('LISTENING'); }
+          if(speaking||turnActive){ interruptSpeech({reason:'barge-in', rms:+lastSpeechRms.toFixed(3), speaking:speaking, overSkye:overSkye}); vstatus('LISTENING'); }
           if(holdTimer){ clearTimeout(holdTimer); holdTimer=null; }   // user is continuing: keep waiting
           vadActive=true;
           utteranceChunks=vadCandidateChunks;
@@ -779,6 +794,7 @@
       }
       vadSilenceStartMs=null;
     } else {
+      lastSpeechRms=0;
       vadCandidateChunks=[]; vadCandidateBlocks=0;   // candidate run broken by silence
       if(vadActive){
         if(vadSilenceStartMs===null)vadSilenceStartMs=performance.now();

@@ -97,7 +97,9 @@ from memory.manager import MemoryManager
 from memory.tasks import TaskStore
 
 MEMORY = MemoryManager(ROOT)
-MOOD = MoodClassifier(lambda texts: MEMORY.model.encode(texts))
+print("Loading emotion model...")
+MOOD = MoodClassifier()
+print("✓ EMOTION MODEL ONLINE")
 TASKS = TaskStore(ROOT)
 
 # =========================================================
@@ -175,13 +177,18 @@ CALL_EXEC_PATTERN = re.compile(
 # answered instantly, a real question or a tool call doesn't — and (b) not
 # doing it again right after the last one. Both are checked below before the
 # phrase pool is even chosen.
-FILLER_ACK = ["Mm-hmm.", "I hear you.", "Right.", "Okay, go on.", "Got it."]
-FILLER_THINKING = [
-    "Hmm, let me check that.",
-    "One moment.",
-    "Let me look into that.",
-    "Give me a second.",
-]
+# Fillers are chosen by the *user's* mood, so an empathetic beat ("Oh, I'm
+# sorry to hear that.") comes before the answer to bad news, and a pleased one
+# before the answer to good news. Each phrase is spoken in that mood's delivery.
+FILLERS = {
+    "calm": [
+        "Hmm, let me check that.", "One moment.", "Let me look into that.",
+        "Give me a second.", "Let me think.", "Right, one moment.", "Good question.",
+    ],
+    "happy": ["Oh, wonderful.", "Ah, splendid.", "That's good to hear."],
+    "sad": ["Oh, I'm sorry to hear that.", "Ah, that's unfortunate.", "Oh dear."],
+    "concerned": ["Hmm, I understand.", "I see.", "Let me see."],
+}
 # Rough signal that the request will dispatch a tool (and so take longer than
 # a plain conversational reply) — not exhaustive, just enough to pick the
 # right tone of filler.
@@ -203,41 +210,53 @@ FILLER_MIN_WORDS = 4
 # This is what actually stops the "randomly appearing" feel: a filler at
 # every turn is a tic, one every third or so is closer to how backchannel
 # actually happens.
-FILLER_COOLDOWN_TURNS = 2
+FILLER_COOLDOWN_TURNS = 1
 
 _last_filler = None
 _last_filler_turn = -FILLER_COOLDOWN_TURNS
 
 
-def pick_filler(user_input: str):
-    """Returns a filler phrase to speak while the real reply is generated, or None."""
+def pick_filler(user_input: str, mood: str = "calm"):
+    """Returns (phrase, mood) to speak while the real reply is generated, or None.
+
+    Nearly every turn that goes to the LLM has a real pause (1.5-3.5 s), and a
+    listener who says nothing for that long reads as a stall, not a person. So
+    fillers are the rule, not the exception: always for tool requests and for
+    emotional messages (the empathetic beat matters most there), very likely for
+    questions, and often for longer statements. The only brake is not repeating
+    a plain "let me check" filler on consecutive turns.
+    """
     global _last_filler, _last_filler_turn
 
     words = user_input.split()
     lower = user_input.lower()
     is_tool_like = any(hint in lower for hint in FILLER_TOOL_HINTS)
     is_question = user_input.rstrip().endswith("?") or bool(QUESTION_LEAD_RE.match(user_input))
+    emotional = mood != "calm"
 
-    if not is_tool_like:
-        if len(words) < FILLER_MIN_WORDS:
+    if emotional:
+        if len(words) < 2:
             return None
-        if TURN_INDEX - _last_filler_turn < FILLER_COOLDOWN_TURNS:
-            return None
-
-    if is_tool_like:
-        pool, probability = FILLER_THINKING, 1.0
-    elif is_question:
-        pool, probability = FILLER_THINKING, 0.6
+        probability = 1.0
+    elif is_tool_like:
+        probability = 1.0
+    elif is_question and len(words) >= 3:
+        probability = 0.85
+    elif len(words) >= FILLER_MIN_WORDS:
+        probability = 0.6
     else:
-        pool, probability = FILLER_ACK, 0.45
+        return None
 
+    if not (emotional or is_tool_like) and TURN_INDEX - _last_filler_turn < FILLER_COOLDOWN_TURNS:
+        return None
     if random.random() > probability:
         return None
 
+    pool = FILLERS[mood]
     choices = [f for f in pool if f != _last_filler] or pool
     _last_filler = random.choice(choices)
     _last_filler_turn = TURN_INDEX
-    return _last_filler
+    return _last_filler, mood
 
 
 # =========================================================
@@ -819,8 +838,20 @@ def stream_skye_response(user_input: str):
     _t["start"] = time.time()
 
     # Fast path: Rules
-    rule_reply = rule_based_response(user_input)
+    LAST_TURN_TIMING.clear()
+    user_mood, emotion, emotion_score = MOOD.user_mood(user_input)
+    LAST_TURN_TIMING.update(
+        turn=TURN_INDEX, tool=None, user_mood=user_mood, emotion=emotion,
+        emotion_score=emotion_score, filler=None,
+    )
+
+    ack = acknowledgement_reply(user_input)
+    rule_reply = ack or rule_based_response(user_input)
     if rule_reply:
+        # Whatever the last tool returned is not relevant to a greeting/thanks.
+        LAST_TOOL_RESULT = ""
+        if ack:
+            LAST_TURN_TIMING["user_mood"] = user_mood = "happy"
         save_telemetry(user_input, rule_reply, ["rule_bypass"], False)
         yield frame("done", text=rule_reply)
         return
@@ -829,13 +860,18 @@ def stream_skye_response(user_input: str):
     # happen, which is exactly the gap a filler should cover. handle_client
     # speaks this in a background thread the moment it sees the frame, so it
     # overlaps with generation instead of adding to the wait.
-    filler_text = pick_filler(user_input)
-    if filler_text:
-        yield frame("filler", text=filler_text)
+    filler = pick_filler(user_input, user_mood)
+    if filler:
+        LAST_TURN_TIMING["filler"] = filler[0]
+        yield frame("filler", text=filler[0], mood=filler[1])
 
     # Format user prompt, injecting past tool data if present
     if LAST_TOOL_RESULT:
-        augmented_input = f"[System Note: Tool execution returned: {LAST_TOOL_RESULT}]\n\n{user_input}"
+        augmented_input = (
+            "[Context only — the result of your previous tool call. Answer the message "
+            "below on its own terms; do not repeat or summarise this unless the user "
+            f"asks about it: {LAST_TOOL_RESULT}]\n\n{user_input}"
+        )
         LAST_TOOL_RESULT = ""
     else:
         augmented_input = user_input
@@ -1005,7 +1041,6 @@ def stream_skye_response(user_input: str):
 
     _end = time.time()
     _tool_end = _t.get("tool", _t["generate"])
-    LAST_TURN_TIMING.clear()
     LAST_TURN_TIMING.update(
         turn=TURN_INDEX - 1,
         tool=tool_name,
@@ -1032,6 +1067,33 @@ def get_skye_response(user_input: str) -> str:
         if data["type"] == "done":
             final = data["text"]
     return final
+
+
+ACK_RE = re.compile(
+    r"\b(?:thank(?:s| you)|cheers|much appreciated|appreciate (?:it|that)|"
+    r"(?:that'?s|that is|sounds|it'?s) (?:great|good|perfect|fine|interesting|helpful|brilliant|superb)|"
+    r"(?:ok|okay|alright|got it|understood|superb|perfect|brilliant|excellent|awesome|cool|nice))\b",
+    re.IGNORECASE,
+)
+# Anything that makes it a request rather than a bare acknowledgement.
+ACK_BLOCK_RE = re.compile(
+    r"\?|\b(?:can|could|would|will|please|set|open|play|search|find|tell|show|list|remind|"
+    r"what|who|when|where|why|how|which|explain|also|and then|but|now)\b",
+    re.IGNORECASE,
+)
+ACK_REPLIES = ["You're welcome, Sir.", "Happy to help.", "Not at all.", "Any time, Sir.", "My pleasure."]
+
+
+def acknowledgement_reply(speech: str):
+    """A short direct reply to a bare "thank you" / "okay great", or None.
+
+    These used to go to the LLM, which — with the previous tool result still
+    attached to the message — dutifully recapped the last answer instead of
+    just replying. Handling them here also makes them instant.
+    """
+    if len(speech.split()) > 8 or ACK_BLOCK_RE.search(speech) or not ACK_RE.search(speech):
+        return None
+    return random.choice(ACK_REPLIES)
 
 
 def greeting() -> str:
@@ -1098,7 +1160,7 @@ def start_cli_mode():
     print(f"\nTelemetry saved to logs/telemetry_{SESSION_ID}.jsonl\nSystems OFFLINE.")
 
 
-def _speak_filler(conn, send_lock, phrase, cancel):
+def _speak_filler(conn, send_lock, phrase, mood, cancel):
     """Sends a filler phrase's (pre-synthesized, cached) audio in the background.
 
     The audio comes from tts.cached_phrase(), so this costs no GPU while the
@@ -1108,7 +1170,7 @@ def _speak_filler(conn, send_lock, phrase, cancel):
     frame is never interleaved byte-for-byte with one from the turn thread.
     """
     try:
-        pcm = tts.cached_phrase(phrase)
+        pcm = tts.cached_phrase(phrase, mood)
         if cancel.is_set():
             return
         with send_lock:
@@ -1168,6 +1230,22 @@ def handle_client(conn):
                 ACTIVE_CONNECTIONS.remove((conn, send_lock))
 
 
+class CancelEvent(threading.Event):
+    """A cancel flag that remembers when and why it was set, so telemetry can
+    show whether an interruption was a real barge-in or (say) SKYE's own voice
+    leaking into the microphone."""
+
+    def __init__(self):
+        super().__init__()
+        self.set_at = None
+        self.info = None
+
+    def set(self, info=None):
+        if not self.is_set():
+            self.set_at, self.info = time.time(), info
+            super().set()
+
+
 def _run_turn(conn, send_lock, user_speech, cancel):
     """One full turn: LLM (+ tools), then speech. `cancel` is set when the user
     barges in or sends a newer request; it stops speech synthesis between
@@ -1183,7 +1261,7 @@ def _run_turn(conn, send_lock, user_speech, cancel):
         if payload["type"] == "filler":
             threading.Thread(
                 target=_speak_filler,
-                args=(conn, send_lock, payload["text"], cancel),
+                args=(conn, send_lock, payload["text"], payload.get("mood", "calm"), cancel),
                 daemon=True,
             ).start()
         elif payload["type"] == "done":
@@ -1192,7 +1270,9 @@ def _run_turn(conn, send_lock, user_speech, cancel):
     timing = dict(LAST_TURN_TIMING)
     tts_t, first_audio_ms, chunks, mood = {}, None, 0, None
     if reply.strip() and not cancel.is_set():
-        mood = MOOD.classify(user_speech, reply)
+        mood = MOOD.final_mood(timing.get("user_mood", "calm"), reply)
+        with send_lock:
+            conn.sendall(frame("mood", mood=mood, emotion=timing.get("emotion")))
         for pcm, is_final in tts.synthesize_reply(
             reply, params=MOOD_PARAMS[mood], cancel=cancel, timings=tts_t
         ):
@@ -1218,6 +1298,10 @@ def _run_turn(conn, send_lock, user_speech, cancel):
     timing.update(
         cancelled=cancel.is_set(),
         mood=mood,
+        cancel_after_ms=(
+            round((cancel.set_at - t_turn) * 1000) if cancel.set_at else None
+        ),
+        cancel_info=cancel.info,
         tts_first_chunk_ms=tts_t.get("first_chunk_ms"),
         tts_total_ms=tts_t.get("total_ms"),
         tts_chunks_sent=chunks,
@@ -1244,7 +1328,7 @@ def _handle_client_loop(conn, reader, send_lock):
     and turns are queued to a single worker so they still run one at a time.
     """
     turns = queue.Queue()
-    state = {"cancel": threading.Event()}
+    state = {"cancel": CancelEvent()}
 
     def worker():
         with mx.stream(MLX_STREAM):
@@ -1271,7 +1355,7 @@ def _handle_client_loop(conn, reader, send_lock):
                     kind = msg.get("type")
                     if kind == "cancel":
                         # Barge-in: stop speaking the current reply.
-                        state["cancel"].set()
+                        state["cancel"].set({k: v for k, v in msg.items() if k != "type"})
                     elif kind == "audio":
                         pcm = base64.b64decode(msg["pcm"])
                         transcript = stt.transcribe_pcm(
@@ -1285,8 +1369,8 @@ def _handle_client_loop(conn, reader, send_lock):
                             continue
                         # A new request supersedes whatever is still being
                         # spoken from the previous one.
-                        state["cancel"].set()
-                        state["cancel"] = threading.Event()
+                        state["cancel"].set({"reason": "superseded"})
+                        state["cancel"] = CancelEvent()
                         turns.put((user_speech, state["cancel"]))
     finally:
         state["cancel"].set()
@@ -1311,7 +1395,7 @@ def start_server_mode():
     # Synthesize every filler phrase now (a no-op once cached on disk) so the
     # first one a user triggers is instant instead of waiting on the engine.
     threading.Thread(
-        target=lambda: [tts.cached_phrase(p) for p in FILLER_ACK + FILLER_THINKING],
+        target=lambda: [tts.cached_phrase(p, m) for m, ps in FILLERS.items() for p in ps],
         daemon=True,
     ).start()
 

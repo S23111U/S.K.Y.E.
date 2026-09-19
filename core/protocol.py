@@ -40,6 +40,7 @@ Outbound audio frames
 ----------------------
   {"type": "audio_chunk", "pcm": "<base64 f32le mono PCM>", "sample_rate": 24000, "final": false}
   {"type": "turn_end"}
+  {"type": "mood", "mood": "happy", "emotion": "joy"}   the delivery chosen for the reply about to be spoken
 
 "audio_chunk" frames (if any) follow the "done" frame, one per synthesized
 speech chunk; "turn_end" always closes out a turn and is what clients should

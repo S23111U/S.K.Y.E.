@@ -121,14 +121,17 @@ def fetch_news(query: str) -> str:
         articles = response.json().get("results", [])
         if not articles:
             return f"No news found for {query}."
-        summary = f"Top {min(5, len(articles))} News Titles for '{query}':\n"
-        for i, article in enumerate(articles[:5]):
-            title = article.get("title", "No Title")
-            description = article.get("description", "") or ""
-            if len(description) > 100:
-                description = description[:100] + "..."
-            summary += f"{i+1}. {title} - {description}\n"
-        return summary
+        # Returned as dated sources (same shape as web_search) so core_v2
+        # summarises the headlines instead of reading the raw list aloud.
+        lines = [f"{WEB_SOURCES_MARKER} Today is {datetime.now():%Y-%m-%d}."]
+        for i, article in enumerate(articles[:5], 1):
+            description = (article.get("description") or "")[:300]
+            published = (article.get("pubDate") or "")[:16]
+            source = article.get("source_name") or article.get("source_id") or "news"
+            lines.append(
+                f"[{i}] {article.get('title', '')} ({source}, published {published}): {description}"
+            )
+        return "\n".join(lines)
     except Exception as e:
         return f"Error fetching news: {e}"
 

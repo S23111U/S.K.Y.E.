@@ -10,7 +10,10 @@ is pushed to stderr; a stray stdout line would corrupt the stream, the same
 trap the MCP server hit).
 
   in : {"op": "say", "id": 3, "text": "...", "params": {"temperature": 0.8,
-        "top_p": 0.95, "repetition_penalty": 1.2, "voice": "calm"}}
+        "top_p": 0.95, "repetition_penalty": 1.2, "voice": "happy",
+        "rate": 1.07, "gain": 1.0}}
+       rate: playback-rate change applied to the output (pitch and pace move
+       together, like real emotional speech); gain: loudness multiplier.
        {"op": "cancel", "id": 3}
   out: {"ready": true}                                  once, after warm-up
        {"id": 3, "pcm": "<b64 f32le mono>", "sr": 24000}  as audio is produced
@@ -72,6 +75,30 @@ print(f"[tts_server] voices: {sorted(VOICES)}", file=sys.stderr)
 for _ in model.generate(text="Warm up.", verbose=False):
     pass
 
+class Retimer:
+    """Streaming playback-rate change (rate > 1: faster and higher; < 1: slower
+    and lower). Linear interpolation with the read position carried across
+    chunks, so chunk boundaries stay continuous (no clicks)."""
+
+    def __init__(self, rate):
+        self.rate, self.buf, self.pos = rate, np.zeros(0, np.float32), 0.0
+
+    def push(self, x):
+        if self.rate == 1.0:
+            return x
+        self.buf = np.concatenate([self.buf, x])
+        idx = np.arange(self.pos, len(self.buf) - 1, self.rate)
+        if len(idx) == 0:
+            return np.zeros(0, np.float32)
+        i0 = idx.astype(np.int64)
+        frac = (idx - i0).astype(np.float32)
+        out = self.buf[i0] * (1 - frac) + self.buf[i0 + 1] * frac
+        nxt = idx[-1] + self.rate
+        drop = int(nxt)
+        self.buf, self.pos = self.buf[drop:], nxt - drop
+        return out
+
+
 requests = queue.Queue()
 cancelled = set()
 cancel_lock = threading.Lock()
@@ -108,6 +135,8 @@ while True:
     params = req.get("params") or {}
     model._conds = VOICES.get(params.get("voice"), VOICES["default"])
     t0, first_ms, was_cancelled = time.time(), None, False
+    retimer = Retimer(float(params.get("rate", 1.0)))
+    gain = float(params.get("gain", 1.0))
     try:
         for r in model.generate(
             text=req["text"],
@@ -123,7 +152,11 @@ while True:
                     cancelled.discard(rid)
                     was_cancelled = True
                     break
-            audio = np.array(r.audio, dtype=np.float32).reshape(-1)
+            audio = retimer.push(np.array(r.audio, dtype=np.float32).reshape(-1))
+            if gain != 1.0:
+                audio = np.clip(audio * gain, -1.0, 1.0)
+            if len(audio) == 0:
+                continue
             if first_ms is None:
                 first_ms = round((time.time() - t0) * 1000)
             send({"id": rid, "pcm": base64.b64encode(audio.tobytes()).decode("ascii"), "sr": r.sample_rate})

@@ -149,21 +149,27 @@ def synthesize_reply(
         _pending.pop(rid, None)
 
 
-def cached_phrase(phrase: str) -> bytes:
+def cached_phrase(phrase: str, mood: str = "calm") -> bytes:
     """Audio for a fixed short phrase, synthesized once and kept on disk.
 
     Fillers cover the LLM's thinking time; synthesizing them live would put
     TTS on the GPU at exactly the moment the LLM needs it. Keyed on the phrase,
-    engine and the reference clip's mtime, so changing the voice regenerates.
+    mood, engine and the reference clip's mtime, so changing the voice
+    regenerates. The mood shapes the delivery (an empathetic filler is spoken
+    softly, a pleased one brightly).
     """
+    from core.mood import MOOD_PARAMS  # local: keeps this module importable alone
+
     key = hashlib.md5(
-        f"turbo|{phrase}|{os.path.getmtime(REFERENCE_VOICE)}".encode()
+        f"turbo|{mood}|{phrase}|{os.path.getmtime(REFERENCE_VOICE)}".encode()
     ).hexdigest()[:16]
     path = os.path.join(FILLER_CACHE_DIR, f"{key}.f32")
     if os.path.isfile(path):
         with open(path, "rb") as f:
             return _level(f.read())
-    pcm = b"".join(p for p, final in synthesize_reply(phrase) if not final)
+    pcm = b"".join(
+        p for p, final in synthesize_reply(phrase, params=MOOD_PARAMS[mood]) if not final
+    )
     os.makedirs(FILLER_CACHE_DIR, exist_ok=True)
     with open(path, "wb") as f:
         f.write(pcm)

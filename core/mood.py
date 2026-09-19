@@ -1,80 +1,99 @@
-"""Chooses how SKYE should *sound* for a given exchange.
+"""Works out how SKYE should *sound*, from how the user *feels*.
 
-Replaces the old random per-sentence speed/temperature jitter, which had no
-relationship to what was being said (good news could come out flat by chance).
-A mood is picked from the meaning of the user's message and SKYE's reply —
-by comparing them to a few example sentences per mood with the sentence
-embedder that long-term memory already loads, so it costs milliseconds and no
-extra LLM call — and each mood maps to fixed sampling parameters for the TTS
-engine, with the default being calm.
+The user's message is classified by a small dedicated emotion model
+(j-hartmann/emotion-english-distilroberta-base, ~8 ms on CPU) and mapped to one
+of four delivery moods:
 
-Chatterbox Turbo has no emotion dial (its `exaggeration` input is ignored), so
-the parameters only shift delivery variability. The strongest lever is a
-reference clip recorded in that tone: drop assets/reference_voice_<mood>.wav
-(happy, sad, concerned) next to reference_voice_short.wav and tts_server picks
-it up for that mood automatically.
+  happy      user is pleased / grateful      -> brighter, a little faster
+  sad        user has bad news / is upset     -> softer, slower, lower
+  concerned  user is frustrated, confused,    -> gentle and unhurried
+             or SKYE is apologising
+  calm       everything else (the default)
+
+An earlier version compared the *reply text* to example sentences; it read
+ordinary news lists as sad and capability lists as happy. The user's own words
+are the reliable signal, so the reply only contributes an apology check.
+
+Chatterbox Turbo has no emotion control (its `exaggeration` input is ignored)
+and sampling temperature alone was inaudible, so each mood also carries `rate`
+(playback-rate change: pitch and pace together, as in real speech) and `gain`,
+applied in tts_server. A recording of the user in that tone, saved as
+assets/reference_voice_<mood>.wav (happy / sad / concerned), is used for the
+voice conditioning when present and is the strongest lever of all.
 """
 
-import numpy as np
+import re
 
 MOOD_PARAMS = {
-    "calm":      dict(temperature=0.70, top_p=0.95, repetition_penalty=1.20),
-    "happy":     dict(temperature=0.95, top_p=0.98, repetition_penalty=1.15, voice="happy"),
-    "sad":       dict(temperature=0.55, top_p=0.90, repetition_penalty=1.25, voice="sad"),
-    "concerned": dict(temperature=0.62, top_p=0.92, repetition_penalty=1.22, voice="concerned"),
+    "calm":      dict(temperature=0.70, top_p=0.95, repetition_penalty=1.20, rate=1.00, gain=1.00),
+    "happy":     dict(temperature=0.80, top_p=0.98, repetition_penalty=1.15, rate=1.10, gain=1.00, voice="happy"),
+    "sad":       dict(temperature=0.60, top_p=0.90, repetition_penalty=1.25, rate=0.88, gain=0.80, voice="sad"),
+    "concerned": dict(temperature=0.65, top_p=0.92, repetition_penalty=1.22, rate=0.94, gain=0.90, voice="concerned"),
 }
 
-PROTOTYPES = {
-    "happy": [
-        "I finished the task!", "That's wonderful news!", "Great, it worked!",
-        "Congratulations, you did it!", "I completed everything on my list.",
-        "Excellent, all done.", "I'm so excited about this.", "Fantastic, that went perfectly.",
-    ],
-    "sad": [
-        "I have some sad news.", "Unfortunately that didn't work out.",
-        "I'm sorry for your loss.", "That's really disappointing.", "Things didn't go well.",
-        "The flight has been cancelled.", "I lost the game.", "I'm feeling really down today.",
-    ],
-    "concerned": [
-        "I don't understand.", "I'm sorry, I couldn't do that.", "I'm not sure about that.",
-        "Apologies, something went wrong.", "I could not find that information.",
-        "Could you clarify what you mean?", "I'm confused about this.", "I can't figure this out.",
-    ],
-    "calm": [
-        "The meeting is at three o'clock.", "It is currently four thirty.", "Here is how it works.",
-        "I have set the alarm for seven.", "The weather is mild today.", "Sure, I can do that.",
-        "A stack is a data structure.", "Let me explain how that works.",
-    ],
-}
+EMOTION_MODEL = "j-hartmann/emotion-english-distilroberta-base"
 
-# A non-calm mood must beat calm by this much to win; keeps ordinary factual
-# replies from being coloured by a faint resemblance to an emotional sentence.
-MARGIN = 0.06
+# Emotion labels need to clear these confidence levels to change the mood.
+JOY_MIN, SAD_MIN, UPSET_MIN = 0.45, 0.50, 0.55
+# Questions and commands are usually neutral even when the classifier wobbles
+# ("set an alarm for 7 AM" scored fear 0.50), so they need much more evidence.
+INSTRUCTION_MIN = 0.80
+INSTRUCTION_RE = re.compile(
+    r"^\s*(?:hey\s+)?(?:(?:skye|sky)[\s,]*)?(?:please\s+)?"
+    r"(?:set|open|play|search|look|find|tell|show|list|remind|what|who|when|where|why|how|which|"
+    r"can|could|would|do|does|did|is|are|will|should|mention|explain|give)\b",
+    re.IGNORECASE,
+)
+CONFUSED_RE = re.compile(
+    r"\b(?:(?:don't|do not|can't|cannot|couldn't|still)\s+(?:understand|get|follow|figure)|"
+    r"confus(?:ed|ing)|no idea|lost me|makes no sense)\b",
+    re.IGNORECASE,
+)
+APOLOGY_RE = re.compile(
+    r"^\s*(?:my apologies|apologies|i apologi[sz]e|i(?:'m| am) sorry|i(?:'m| am) afraid|unfortunately)",
+    re.IGNORECASE,
+)
 
 
 class MoodClassifier:
-    def __init__(self, encode):
-        """`encode`: list[str] -> array of sentence embeddings."""
-        self._encode = encode
-        self._proto = {
-            m: self._unit(np.asarray(encode(sents), dtype=np.float32))
-            for m, sents in PROTOTYPES.items()
-        }
+    def __init__(self):
+        # Imported here so the module can be inspected without loading torch.
+        from transformers import pipeline
+
+        self._clf = pipeline(
+            "text-classification", model=EMOTION_MODEL, top_k=None, device="cpu"
+        )
+
+    def emotions(self, text: str) -> dict:
+        return {r["label"]: float(r["score"]) for r in self._clf(text[:512])[0]}
+
+    def user_mood(self, text: str):
+        """(mood, top_emotion_label, score) for the user's message."""
+        scores = self.emotions(text)
+        top = max(scores, key=scores.get)
+        joy, sad = scores.get("joy", 0), scores.get("sadness", 0)
+        upset = max(scores.get(k, 0) for k in ("anger", "fear", "disgust"))
+        sur = scores.get("surprise", 0)
+        instruction = bool(INSTRUCTION_RE.match(text))
+        strict = INSTRUCTION_MIN if instruction else None
+
+        if joy >= (strict or JOY_MIN) or (
+            sur >= 0.70 and joy >= 0.08 and text.rstrip().endswith("!") and not instruction
+        ):
+            mood = "happy"
+        elif sad >= (strict or SAD_MIN):
+            mood = "sad"
+        elif upset >= (strict or UPSET_MIN):
+            mood = "concerned"
+        elif CONFUSED_RE.search(text):
+            mood = "concerned"
+        else:
+            mood = "calm"
+        return mood, top, round(scores[top], 2)
 
     @staticmethod
-    def _unit(x):
-        return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-9)
-
-    def scores(self, text: str) -> dict:
-        v = self._unit(np.asarray(self._encode([text]), dtype=np.float32))[0]
-        return {m: float((p @ v).max()) for m, p in self._proto.items()}
-
-    def classify(self, user_input: str, reply: str) -> str:
-        """The reply carries most of the weight (it is what gets spoken); the
-        user's message tips borderline cases ("I finished the task" → happy)."""
-        r, u = self.scores(reply), self.scores(user_input or reply)
-        combined = {m: 0.65 * r[m] + 0.35 * u[m] for m in r}
-        best = max(combined, key=combined.get)
-        if best != "calm" and combined[best] - combined["calm"] < MARGIN:
-            return "calm"
-        return best
+    def final_mood(user_mood: str, reply: str) -> str:
+        """The user's mood decides, except that apologising is always gentle."""
+        if user_mood == "calm" and APOLOGY_RE.match(reply or ""):
+            return "concerned"
+        return user_mood
