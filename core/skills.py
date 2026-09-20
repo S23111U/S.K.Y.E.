@@ -15,6 +15,7 @@ import re
 
 SKILLS = {
     "finance": {
+        "utterances": ['how much money did I spend last month', 'what is my account balance', 'add an expense of twelve for lunch', 'am I within budget', 'what did I buy this week', 'how much did I pay for rent'],
         "ui": "finance",
         "pattern": re.compile(
             r"\b(spent|spend|spending|expenses?|budget|paid|bought|purchased|costs?|dollars?|bucks|"
@@ -39,6 +40,7 @@ SKILLS = {
         ],
     },
     "todo": {
+        "utterances": ["what's on my to-do list", 'add buy milk to my list', 'mark that task as done', 'what do I need to do today', 'what are my priorities', 'remind me what is pending on my list'],
         "ui": "default",
         "pattern": re.compile(
             r"\b(to-?do|to do|todos?|my list|task list|priority)\b|"
@@ -58,6 +60,7 @@ SKILLS = {
         ],
     },
     "calendar": {
+        "utterances": ["what's on my calendar tomorrow", 'schedule a meeting on Friday', 'am I free this afternoon', 'move my appointment to Monday', 'cancel my event', 'when is my next meeting', 'what does my week look like', 'am I busy on Saturday', 'do I have anything on this weekend'],
         "ui": "calendar",
         "pattern": re.compile(
             r"\b(calendar|schedule|scheduled|agenda|appointments?|meetings?|events?|free time|free slot|"
@@ -96,6 +99,7 @@ SKILLS = {
         "examples": [],
     },
     "knowledge": {
+        "utterances": ['what did I write in my lecture notes', 'summarise my notes on algorithms week three', 'find my study notes about networks', 'read my tutorial notes'],
         "ui": "knowledge",
         "pattern": re.compile(
             r"\b(my notes|notes? (?:on|about|for|from)|lectures?|tutorials?|study|studying|revise|revision|"
@@ -118,9 +122,39 @@ UNDO_RE = re.compile(r"\b(undo|scratch that|take that back|remove that)\b", re.I
 STICKY_TURNS = 2
 
 
-def route_skill(text: str, sticky: str | None = None):
+EMBED_MIN = 0.62      # cosine to the best matching example
+EMBED_MARGIN = 0.06   # ...and this far ahead of the next skill
+_centroids = None
+
+
+def _embed_route(text, embed):
+    """Fallback for phrasings the regex misses ("what does my week look like"):
+    nearest skill by sentence embedding, using the model SKYE already has loaded.
+    Deliberately conservative — a wrong skill is worse than no skill."""
+    global _centroids
+    import numpy as np
+    if _centroids is None:
+        _centroids = {}
+        for name, s in SKILLS.items():
+            ex = s.get("utterances")
+            if ex:
+                _centroids[name] = np.asarray(embed(ex), dtype=np.float32)
+    q = np.asarray(embed([text]), dtype=np.float32)[0]
+    q = q / (np.linalg.norm(q) + 1e-9)
+    scores = {}
+    for name, m in _centroids.items():
+        m = m / (np.linalg.norm(m, axis=1, keepdims=True) + 1e-9)
+        scores[name] = float((m @ q).max())
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    if ranked and ranked[0][1] >= EMBED_MIN and (len(ranked) < 2 or ranked[0][1] - ranked[1][1] >= EMBED_MARGIN):
+        return ranked[0][0]
+    return None
+
+
+def route_skill(text: str, sticky: str | None = None, embed=None):
     """Skill name for a message, or None. `sticky` is the skill of the last
-    turn(s): "undo that" or a bare follow-up should stay in it."""
+    turn(s): "undo that" or a bare follow-up should stay in it. `embed` (list of
+    strings -> vectors) enables the embedding fallback."""
     if SKILLS["einstein"]["pattern"].search(text):
         return "einstein"
     scores = {name: len(s["pattern"].findall(text)) for name, s in SKILLS.items()}
@@ -129,6 +163,8 @@ def route_skill(text: str, sticky: str | None = None):
         return best
     if sticky and UNDO_RE.search(text):
         return sticky
+    if embed is not None and len(text.split()) >= 3:
+        return _embed_route(text, embed)
     return None
 
 

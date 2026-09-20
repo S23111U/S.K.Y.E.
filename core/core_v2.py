@@ -240,6 +240,26 @@ WEATHER_CITY_RE = re.compile(
     r"\b(?:in|for|at|of)\s+([A-Za-z][A-Za-z .'-]*(?:,\s*[A-Za-z .'-]+)*?)\s*(?:right now|today|tonight|tomorrow|now|currently|at the moment|like)?\s*[?.!]*\s*$",
     re.IGNORECASE,
 )
+# Actions that must be confirmed before they run (sending, calling, deleting,
+# running commands). The model asks for the tool as usual, but the call is held
+# and read back to him; "yes" runs it, anything else drops it. Tools get added
+# here as they are built; SKYE_CONFIRM_TOOLS=name,name adds more from .env.
+CONFIRM_TOOLS = {t.strip() for t in os.getenv("SKYE_CONFIRM_TOOLS", "").split(",") if t.strip()}
+CONFIRM_TTL_S = 90
+_PENDING = {}
+YES_RE = re.compile(r"^\W*(?:yes|yeah|yep|yup|sure|ok|okay|correct|confirm(?:ed)?|go ahead|do it|send it|please do|that'?s right|affirmative|proceed)\b[\w\s,.!]{0,30}$", re.IGNORECASE)
+NO_RE = re.compile(r"^\W*(?:no|nope|nah|cancel|don'?t|do not|stop|never ?mind|abort|not now|wait)\b", re.IGNORECASE)
+
+NO_ONLY_RE = re.compile(r"^\W*(?:no|nope|nah|cancel(?: that| it)?|never ?mind|not now|don'?t)\W*$", re.IGNORECASE)
+
+
+def _describe_action(name, args):
+    bits = ", ".join(f"{k} {v}" for k, v in (args or {}).items() if v not in ("", None))
+    return f"{name.replace('_', ' ')}" + (f" with {bits}" if bits else "")
+
+
+TIME_RE = re.compile(r"\b(?:what(?:'s| is)? the time|what time is it|what time (?:is it|it is)|current time|tell me the time|time (?:is it )?(?:right )?now)\b", re.IGNORECASE)
+DATE_RE = re.compile(r"\b(?:what(?:'s| is)? (?:the )?(?:date|day)(?: today)?|what day is (?:it|today)|today'?s date|what(?:'s| is) today)\b", re.IGNORECASE)
 # "Clear the conversation": really empties the short-term context. Long-term
 # memory and the profile are deliberately NOT wiped by a spoken phrase; the
 # reply says so instead of pretending, which is what the model used to do.
@@ -937,7 +957,10 @@ def stream_skye_response(user_input: str):
         emotion_score=emotion_score, filler=None,
     )
 
-    skill = route_skill(user_input, _SKILL_STICKY[0] if _SKILL_STICKY[1] > 0 else None)
+    skill = route_skill(
+        user_input, _SKILL_STICKY[0] if _SKILL_STICKY[1] > 0 else None,
+        embed=lambda xs: MEMORY.model.encode(xs, normalize_embeddings=True),
+    )
     if skill:
         _SKILL_STICKY[0], _SKILL_STICKY[1] = skill, STICKY_TURNS
     else:
@@ -954,6 +977,24 @@ def stream_skye_response(user_input: str):
         save_telemetry(user_input, reply, ["rule_bypass"], False)
         yield frame("skill", skill="default", ui="default", lock=False)
         yield frame("done", text=reply)
+        return
+
+    if (TIME_RE.search(user_input) or DATE_RE.search(user_input)) and len(user_input.split()) <= 9:
+        # The clock is never the model's to guess: it once said "10:15 AM" at 7 PM.
+        LAST_TOOL_RESULT = ""
+        if TIME_RE.search(user_input):
+            result = str(call_function_safe("tell_time", {}))
+            result = f"It is {result}."
+            yield frame("tool", name="tell_time")
+        else:
+            result = datetime.now().strftime("Today is %A, %-d %B %Y.")
+        SHARED_MESSAGES.append({"role": "user", "content": user_input})
+        SHARED_MESSAGES.append({"role": "assistant", "content": result})
+        if len(SHARED_MESSAGES) > 7:
+            SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+        _save_conversation_state()
+        save_telemetry(user_input, result, [], TIME_RE.search(user_input) is not None, "tell_time" if TIME_RE.search(user_input) else None, {})
+        yield frame("done", text=result)
         return
 
     if WEATHER_RE.search(user_input) and not re.search(r"\b(?:my notes|note)\b", user_input, re.IGNORECASE):
@@ -974,6 +1015,33 @@ def stream_skye_response(user_input: str):
         _save_conversation_state()
         save_telemetry(user_input, result, [], True, "get_weather", {"city": city})
         yield frame("done", text=result)
+        return
+
+    if _PENDING:
+        held = dict(_PENDING)
+        _PENDING.clear()
+        if time.time() - held["at"] <= CONFIRM_TTL_S:
+            if YES_RE.match(user_input):
+                result = str(call_function_safe(held["tool"], held["args"]))
+                yield frame("tool", name=held["tool"])
+                SHARED_MESSAGES.append({"role": "user", "content": user_input})
+                SHARED_MESSAGES.append({"role": "assistant", "content": result})
+                save_telemetry(user_input, result, [], True, held["tool"], held["args"])
+                yield frame("done", text=result)
+                return
+            if NO_RE.match(user_input):
+                reply = "Okay, I have cancelled that."
+                save_telemetry(user_input, reply, ["rule_bypass"], False)
+                yield frame("done", text=reply)
+                return
+        # anything else: the held action is dropped and this is a fresh request
+    elif NO_ONLY_RE.match(user_input):
+        # A bare "no"/"cancel that" with nothing pending: without this the model
+        # improvised ("I have cancelled the reminder...") and claimed an action
+        # that never happened.
+        reply = "Okay."
+        save_telemetry(user_input, reply, ["rule_bypass"], False)
+        yield frame("done", text=reply)
         return
 
     if CLEAR_RE.search(user_input):
@@ -1156,8 +1224,12 @@ def stream_skye_response(user_input: str):
     final_narration = guarded.strip()
 
     # Tool Execution
-    if tool_name:
+    if tool_name in CONFIRM_TOOLS:
+        _PENDING.update(tool=tool_name, args=tool_args or {}, at=time.time())
+        tool_reply = f"I am about to {_describe_action(tool_name, tool_args)}. Shall I go ahead?"
+    elif tool_name:
         tool_reply = call_function_safe(tool_name, tool_args)
+    if tool_name:
         _t["tool"] = time.time()
         tool_reply_str = (
             json.dumps(tool_reply, ensure_ascii=False)
