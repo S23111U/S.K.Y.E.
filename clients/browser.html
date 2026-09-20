@@ -573,8 +573,8 @@
   // Matches the end of an utterance, so "Oh okay, thank you Sky. You can sleep
   // now." works as well as a bare "go to sleep". Anchored at the end and at a
   // clause start, so "how much sleep do I need" or "I can't sleep" do not.
-  const STOP=/(?:^|[.,!?]\s*)(?:(?:i think|i guess|i suppose|okay|ok|so|well|alright|right|and)[\s,]+)*(?:(?:skye|sky)[\s,]*)?(?:(?:you can|you could|please|now|go|just|can)\s+)*(?:stop listening|stop the mic|go to sleep|put yourself to sleep|mute yourself|sleep|stand ?by|good ?night)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky))?\s*[.!?]*\s*$/i;
-  const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
+  const STOP=/(?:^|[.,!?]\s*)(?:(?:i think|i guess|i suppose|okay|ok|so|well|alright|right|and)[\s,]+)*(?:(?:skye|sky)[\s,]*)?(?:(?:you can|you could|you should|please|now|go|just|can|i want you to|i'd like you to|time to|it's time to|i think it's time to|i'm going to|i am going to|i go to|i'll go to)\s+)*(?:stop listening|stop the mic|go to sleep|go to bed|put yourself to sleep|mute yourself|mute|sleep|sleep mode|stand ?by|good ?night|night night|shut down|power down|take a break|rest now|rest)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky))?\s*[.!?]*\s*$/i;
+  const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|ooh+|oo+|er+|eh+|huh|huff|hah+|haha+|whew|phew|tsk|psst|wow|yeah|yep|nope|ok|okay|hello|hi|hey|right|so|well)$/i;
   // While asleep the microphone stays live (audio still reaches local
   // Whisper); the only difference is that nothing but the wake word is acted on.
   const WAKE_ONLY=/^(?:wake up|wake|you there|are you there|hello|hey)$/i;
@@ -608,13 +608,19 @@
   // and (because SKYE was then busy) threw the second half away. So a finished
   // utterance is held for a moment and merged with whatever comes next; the
   // hold is longer when it ends on a word that clearly wants a continuation.
-  const HOLD_COMPLETE_MS=900, HOLD_DANGLING_MS=2500;
-  const DANGLING=/(?:\b(?:and|but|because|which|or|if|when|then|the|a|an|of|to|also|um+|uh+|er+|hm+)|[,;:\-]|\.{2,}|\u2026)\s*\.?\s*$/i;
+  const HOLD_COMPLETE_MS=1000, HOLD_UNSURE_MS=1800, HOLD_DANGLING_MS=3500;
+  const DANGLING=/(?:\b(?:and|but|because|which|or|if|when|then|the|a|an|of|to|also|so|that|with|for|from|about|in|on|at|by|as|is|are|was|were|my|your|i|i'm|i've|i'll|how|what|why|can|could|would|should|do|does|like|between|than|um+|uh+|er+|hm+)|[,;:\-]|\.{2,}|\u2026)\s*\.?\s*$/i;
+  // Whisper ends a finished thought with . ? or !, and a short fragment without one is probably unfinished.
+  function holdFor(t){
+    if(DANGLING.test(t))return HOLD_DANGLING_MS;
+    const words=t.trim().split(/\s+/).length;
+    return (/[.?!]\s*$/.test(t)&&words>=4)?HOLD_COMPLETE_MS:HOLD_UNSURE_MS;
+  }
   let pendingText='', holdTimer=null;
 
   function armHold(){
     clearTimeout(holdTimer);
-    holdTimer=setTimeout(commitPending, DANGLING.test(pendingText)?HOLD_DANGLING_MS:HOLD_COMPLETE_MS);
+    holdTimer=setTimeout(commitPending, holdFor(pendingText));
   }
   // Re-arm after a stretch of input that turned out to be noise / too short.
   function resumeHold(){ if(pendingText&&!holdTimer)armHold(); }
@@ -737,23 +743,27 @@
   let captureProcessor=null;
   let utteranceChunks=[], vadActive=false, vadSilenceStartMs=null;
   let vadCandidateChunks=[], vadCandidateBlocks=0, lastSpeechRms=0;
-  const VAD_ENERGY_THRESHOLD=0.015;
-  const VAD_SILENCE_MS=800;
-  const VAD_MIN_UTTERANCE_MS=300;
+  const VAD_ENERGY_THRESHOLD=0.022;   // floor; the live threshold also follows the room noise (below)
+  const VAD_SILENCE_MS=1100;          // quiet needed to end an utterance (was 800: cut people off mid-thought)
+  const VAD_MIN_UTTERANCE_MS=450;     // shorter than this is a click/cough, not speech
+  // Room noise tracker: the speech threshold is at least this many times the
+  // recent ambient level, so a noisy room (fan, keyboard) stops triggering.
+  let noiseFloor=0.006;
+  const NOISE_MULT=3.5;
   // A single loud block shouldn't cut SKYE off or start capturing — a
   // momentary echo leak (before acoustic echo cancellation converges, right
   // at the start of a session) or a click/cough looks identical to speech
   // for one block. Require this many consecutive speech-classified blocks
   // (~130-150ms at a 2048-sample block size) before committing.
-  const VAD_CONFIRM_BLOCKS=3;
+  const VAD_CONFIRM_BLOCKS=6;   // ~250 ms of sustained sound: a mouse click or key tap is over in a fraction of that
   // While SKYE itself is speaking, its own voice can leak back into the mic
   // even with echoCancellation on. That looked like the user talking and
   // cancelled the reply (and the short filler phrase, ~150 ms in). So an
   // interruption over SKYE's voice needs a louder, longer signal than starting
   // a fresh utterance. Each cancel reports its level to the server's
   // telemetry (cancel_info in logs/timing_*.jsonl) so these can be tuned.
-  const VAD_BARGE_ENERGY=0.04;
-  const VAD_BARGE_CONFIRM_BLOCKS=5;
+  const VAD_BARGE_ENERGY=0.045;
+  const VAD_BARGE_CONFIRM_BLOCKS=6;
   // Without a hard cap, an utterance that never gets a full silence gap
   // (e.g. background noise during "asleep", where the mic stays live by
   // design) accumulates forever and corrupts whatever comes next. Force a
@@ -825,7 +835,8 @@
   function handleAudioBlock(data){
     const level=rms(data);
     const overSkye=speaking&&!vadActive;   // could be an echo of SKYE's own voice
-    const isSpeech=level>(overSkye?VAD_BARGE_ENERGY:VAD_ENERGY_THRESHOLD);
+    const startThreshold=Math.max(VAD_ENERGY_THRESHOLD, noiseFloor*NOISE_MULT);
+    const isSpeech=level>(overSkye?Math.max(VAD_BARGE_ENERGY,startThreshold):(vadActive?startThreshold*0.7:startThreshold));
     const needBlocks=overSkye?VAD_BARGE_CONFIRM_BLOCKS:VAD_CONFIRM_BLOCKS;
     if(isSpeech)lastSpeechRms=Math.max(lastSpeechRms,level);
     if(isSpeech){
@@ -854,6 +865,7 @@
     } else {
       lastSpeechRms=0;
       vadCandidateChunks=[]; vadCandidateBlocks=0;   // candidate run broken by silence
+      if(!speaking)noiseFloor=Math.min(0.02, noiseFloor*0.97+level*0.03);   // learn the room, never SKYE's own voice
       if(vadActive){
         if(vadSilenceStartMs===null)vadSilenceStartMs=performance.now();
         utteranceChunks.push(new Float32Array(data));   // keep trailing silence for natural cadence

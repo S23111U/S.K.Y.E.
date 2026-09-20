@@ -188,11 +188,29 @@ FILLERS = {
     "calm": [
         "Hmm, let me check that.", "One moment.", "Let me look into that.",
         "Give me a second.", "Let me think.", "Right, one moment.", "Good question.",
+        "Let me see.", "Okay, give me a moment.", "Alright, let me think about that.",
+        "Interesting, one second.", "Sure, let me work that out.", "Hold on a moment.",
+        "Let me have a think.", "Right, let me see.", "Bear with me a second.",
+        "Ooh, let me think.", "Okay, let me pull that together.",
     ],
-    "happy": ["Oh, wonderful.", "Ah, splendid.", "That's good to hear."],
-    "sad": ["Oh, I'm sorry to hear that.", "Ah, that's unfortunate.", "Oh dear."],
-    "concerned": ["Hmm, I understand.", "I see.", "Let me see."],
+    "happy": [
+        "Oh, wonderful.", "Ah, splendid.", "That's good to hear.", "Oh, lovely.",
+        "Ah, brilliant.", "Oh, nice.", "Ha, great.",
+    ],
+    "sad": [
+        "Oh, I'm sorry to hear that.", "Ah, that's unfortunate.", "Oh dear.",
+        "Oh no, I'm sorry.", "Ah, that sounds hard.", "I'm sorry about that.",
+    ],
+    "concerned": [
+        "Hmm, I understand.", "I see.", "Let me see.", "Hmm, let me look at that.",
+        "Okay, let's have a look.", "Right, I hear you.",
+    ],
 }
+# For requests that will run a tool (weather, calendar, Notion, search...).
+TOOL_FILLERS = [
+    "Let me check that for you.", "Checking now.", "On it.", "One moment, checking.",
+    "Let me look that up.", "Pulling that up now.", "Sure, checking.", "Give me a second to check.",
+]
 # Rough signal that the request will dispatch a tool (and so take longer than
 # a plain conversational reply) — not exhaustive, just enough to pick the
 # right tone of filler.
@@ -213,12 +231,7 @@ FILLER_MIN_WORDS = 4
 # Einstein mode is a switch, not a one-off: saying "Einstein mode" turns it on
 # and it stays on (gold UI) until he says to switch it off.
 _EINSTEIN_ON = False
-EINSTEIN_MODE_RE = re.compile(r"\beinstein\b", re.IGNORECASE)
-EINSTEIN_OFF_RE = re.compile(
-    r"\b(?:(?:switch|turn|shut|put|set|take|exit|leave|stop|disable|end|cancel)\b.{0,25}\beinstein\b|"
-    r"\beinstein(?: mode)?\b.{0,12}\b(?:off|over|done|stop|disabled)\b|(?:no more|enough) einstein)",
-    re.IGNORECASE,
-)
+EINSTEIN_MODE_RE = einstein.MODE_RE
 # What is left of "use Einstein mode" once the switching words are removed: if
 # nothing real remains, he means "answer my last question that way".
 EINSTEIN_FILLER_WORDS = {
@@ -226,6 +239,7 @@ EINSTEIN_FILLER_WORDS = {
     "enable", "go", "into", "with", "for", "that", "this", "it", "again", "try", "and", "can", "you",
     "could", "einstein", "einsteins", "skye", "sky", "then", "so", "okay", "ok", "answer", "redo", "do",
     "let", "lets", "let's", "me", "i", "want", "would", "like", "a", "an", "of", "in", "up", "over",
+    "genius", "deep", "think", "thinking", "much", "harder", "properly", "better", "more",
 }
 _last_filler = None
 
@@ -268,7 +282,7 @@ def pick_filler(user_input: str, mood: str = "calm"):
     if random.random() > probability:
         return None
 
-    pool = FILLERS[mood]
+    pool = TOOL_FILLERS if (mood == "calm" and is_tool_like) else FILLERS[mood]
     choices = [f for f in pool if f != _last_filler] or pool
     _last_filler = random.choice(choices)
     return _last_filler, mood
@@ -915,7 +929,9 @@ def stream_skye_response(user_input: str):
     LAST_TURN_TIMING["skill"] = skill
 
     global _EINSTEIN_ON
-    if EINSTEIN_MODE_RE.search(user_input) and EINSTEIN_OFF_RE.search(user_input):
+    if (EINSTEIN_MODE_RE.search(user_input) and einstein.is_off(user_input)) or (
+        _EINSTEIN_ON and einstein.NORMAL_RE.search(user_input)
+    ):
         _EINSTEIN_ON = False
         LAST_TOOL_RESULT = ""
         reply = "Einstein mode is off."
@@ -1187,8 +1203,9 @@ def _einstein_turn(user_input: str, user_mood: str, switched_on: bool = False):
             return
         question, prev = prev, None    # redo the last question properly
 
-    LAST_TURN_TIMING["filler"] = einstein.FILLER
-    yield frame("filler", text=einstein.FILLER, mood="calm")
+    _f = random.choice(einstein.FILLERS)
+    LAST_TURN_TIMING["filler"] = _f
+    yield frame("filler", text=_f, mood="calm")
     yield frame("start")
     context = einstein.background(MEMORY.get_persistent_profile(), prev)
 
@@ -1558,7 +1575,7 @@ def start_server_mode():
     # Synthesize every filler phrase now (a no-op once cached on disk) so the
     # first one a user triggers is instant instead of waiting on the engine.
     threading.Thread(
-        target=lambda: [tts.cached_phrase(p, m) for m, ps in FILLERS.items() for p in ps],
+        target=lambda: [tts.cached_phrase(p, m) for m, ps in [*FILLERS.items(), ("calm", TOOL_FILLERS), ("calm", einstein.FILLERS)] for p in ps],
         daemon=True,
     ).start()
 

@@ -26,12 +26,42 @@ MODELS = [m.strip() for m in os.getenv(
 TIMEOUT_S = 120
 PROFILE_KEYS = ("academic_background", "interest", "current_topic_of_interest")
 
+# Names that switch the mode on, and phrases that switch it off.
+_NAMES = r"(?:einstein(?:'s)?(?: mode)?|genius mode|deep[- ]think(?:ing)? mode|thinking mode|professor mode)"
+MODE_RE = re.compile(rf"\b{_NAMES}\b", re.IGNORECASE)
+_OFF_VERBS = r"(?:switch|turn|shut|put|set|take|exit|leave|stop|disable|end|cancel|close|quit|drop|kill|finish|deactivate)"
+OFF_RE = re.compile(
+    rf"\b(?:{_OFF_VERBS}\b.{{0,30}}\b{_NAMES}|"
+    rf"{_NAMES}\b.{{0,15}}\b(?:off|over|done|finished|stop|disabled|deactivated)|"
+    rf"(?:no more|enough|done with|finished with) {_NAMES})",
+    re.IGNORECASE,
+)
+_ON_WORDS = re.compile(r"\b(?:switch|turn|go|change|move)\s+(?:on|to|into)\b|\b(?:activate|enable|use|start|begin)\b", re.IGNORECASE)
+
+
+def is_off(text: str) -> bool:
+    """"Switch Einstein mode off" — but not "switch to Einstein mode"."""
+    return bool(OFF_RE.search(text)) and not _ON_WORDS.search(text)
+
+
+# Only meaningful while the mode is on ("back to normal", "normal mode").
+NORMAL_RE = re.compile(
+    r"\b(?:back to normal|go back to normal|normal mode|regular mode|standard mode|quick mode|"
+    r"switch back|(?:that'?s|that is) enough (?:thinking|of that)|stop (?:thinking|overthinking))\b",
+    re.IGNORECASE,
+)
 TRIGGER_RE = re.compile(
-    r"\b(?:einstein(?:'s)? mode|einstein|think (?:really |very )?(?:hard|deeply|carefully)|think it through|"
+    rf"\b(?:{_NAMES}|einstein|think (?:really |very )?(?:hard|deeply|carefully)|think it through|"
     r"deep(?:ly)? (?:think|dive|analy[sz]e)|in[- ]depth (?:explanation|analysis))\b",
     re.IGNORECASE,
 )
-FILLER = "Let me think this through properly. Give me a moment."
+FILLERS = [
+    "Let me think this through properly. Give me a moment.",
+    "Okay, let me really think about this.",
+    "Right, give me a moment to think this through.",
+    "Let me work through this carefully.",
+]
+FILLER = FILLERS[0]
 
 SYSTEM = (
     "You are the reasoning engine behind a voice assistant. Think carefully, then give a rigorous, "

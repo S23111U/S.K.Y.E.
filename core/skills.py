@@ -88,7 +88,7 @@ SKILLS = {
         "ui": "einstein",
         "direct": True,
         "pattern": re.compile(
-            r"\beinstein\b|\bthink (?:really |very )?(?:hard|deeply|carefully)\b|\bthink it through\b|"
+            r"\b(?:einstein|genius mode|deep[- ]think(?:ing)? mode|thinking mode|professor mode)\b|\bthink (?:really |very )?(?:hard|deeply|carefully)\b|\bthink it through\b|"
             r"\bdeep(?:ly)? (?:think|dive|analy[sz]e)\b|\bin[- ]depth (?:explanation|analysis)\b",
             re.IGNORECASE,
         ),

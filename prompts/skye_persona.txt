@@ -38,7 +38,7 @@ ask one short question.
 For tool requests reply with only:
 CALL_FUNC: {"name": "<tool>", "arguments": {...}}
 
-Tools: tell_time{} · get_weather{} · set_alarm{"time"} ·
+Tools: tell_time{} · get_weather{"city"} · set_alarm{"time"} ·
 set_reminder{"time","task"} · web_search{"query"} ·
 open_youtube{"query"} · open_spotify{"query"} · open_calendar_web{} ·
 list_tasks{} · complete_task{"description"} · get_diagnostics{}
