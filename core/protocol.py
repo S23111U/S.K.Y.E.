@@ -59,10 +59,22 @@ after forwarding a client message (see clients/browser.py's bridge).
 """
 
 import json
+import re
+
+
+_DOLLAR_AMOUNT = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)")
+
+
+def _no_dollar_sign(text: str) -> str:
+    """"$12.50" -> "12.50 dollars". The TTS engine reads "$" badly and it looks
+    odd on screen, so it never leaves the server."""
+    return _DOLLAR_AMOUNT.sub(r"\1 dollars", text).replace("$", "")
 
 
 def frame(kind: str, **fields) -> bytes:
     """Encode one frame, newline-terminated, ready to send."""
+    if kind in ("done", "token", "detail") and isinstance(fields.get("text"), str) and "$" in fields["text"]:
+        fields["text"] = _no_dollar_sign(fields["text"]) if kind != "token" else fields["text"].replace("$", "")
     return (json.dumps({"type": kind, **fields}, ensure_ascii=False) + "\n").encode("utf-8")
 
 

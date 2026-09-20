@@ -531,6 +531,13 @@
     const text=input.value.trim();
     if(!text||waiting||ws.readyState!==WebSocket.OPEN)return;
 
+    if(asleep){ asleep=false; vstatus('LISTENING'); }    // typing wakes SKYE
+    if(STOP.test(text)){                                 // "go to sleep" typed, same as spoken
+      input.value=''; input.style.height='auto';
+      asleep=true; clearPending(); busyQueue=''; interruptSpeech(); resetVadState();
+      vstatus('SLEEPING - SAY "SKYE"');
+      return;
+    }
     detailPanel.classList.remove('show');
     // Show question
     qaQ.style.display='block';
