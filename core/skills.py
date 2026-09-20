@@ -57,6 +57,31 @@ SKILLS = {
             ("mark the DSA assignment as done", '{"name": "update_todo", "arguments": {"name": "DSA assignment", "status": "Done"}}'),
         ],
     },
+    "calendar": {
+        "ui": "calendar",
+        "pattern": re.compile(
+            r"\b(calendar|schedule|scheduled|agenda|appointments?|meetings?|events?|free time|free slot|"
+            r"am i free|what'?s next|next event)\b|"
+            r"\b(?:book|put|add|move|reschedule|cancel|push)\b.{0,50}\b(?:calendar|meeting|appointment|event)\b|"
+            r"\bwhat do i have (?:on|today|tomorrow|this|next)\b|\b(?:re)?schedule\b|"
+            r"\b(?:move|push|shift)\b.{0,50}\b(?:to|until|for)\b.{0,25}(?:tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|next week|\d\s?(?:am|pm)|\d{1,2}:\d{2}|noon)|"
+            r"\bcancel (?:the|my|that|our)\b(?!.{0,30}\b(?:alarm|reminder|subscription|order)\b)",
+            re.IGNORECASE,
+        ),
+        "manifest": (
+            "Calendar tools (his Google Calendar; alarms and reminders are different): "
+            'list_events{"period"} · next_event{} · add_event{"title","when","duration_minutes"} · '
+            'move_event{"title","when"} · cancel_event{"title"} · find_free_time{"day","minutes"} · '
+            "undo_calendar{}. period is today, tomorrow, this week, next week, a weekday or a date. "
+            'when is the day and time as he said it, such as "tomorrow at 3pm". Use undo_calendar when '
+            "he says undo or scratch that after a calendar change. To just open the calendar website use open_calendar_web."
+        ),
+        "examples": [
+            ("what's on my calendar today?", '{"name": "list_events", "arguments": {"period": "today"}}'),
+            ("schedule a dentist appointment tomorrow at 3pm", '{"name": "add_event", "arguments": {"title": "Dentist appointment", "when": "tomorrow at 3pm"}}'),
+            ("move my standup to Friday at 10", '{"name": "move_event", "arguments": {"title": "standup", "when": "Friday at 10am"}}'),
+        ],
+    },
     "knowledge": {
         "ui": "knowledge",
         "pattern": re.compile(

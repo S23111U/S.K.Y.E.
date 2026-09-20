@@ -46,6 +46,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
 import notion_tools
+import calendar_tools
 from memory.tasks import TaskStore, next_occurrence, format_due
 from memory.manager import MemoryManager
 
@@ -537,6 +538,63 @@ def undo_last_entry() -> str:
     return _notion(notion_tools.undo_last_entry)
 
 
+# --- Google Calendar (see calendar_tools.py) ---
+def _calendar(fn, *args):
+    """Runs a calendar tool; any failure becomes a spoken sentence, not a crash."""
+    if not calendar_tools.connected():
+        return "Your calendar is not connected yet. Run the Google login script first."
+    try:
+        return fn(*args)
+    except calendar_tools.CalendarError as e:
+        print(f"[calendar] {fn.__name__} failed: {e}", file=sys.stderr)
+        if "login expired" in str(e):
+            return "Your Google login has expired. Run the login script again."
+        return "I could not reach your calendar just now."
+
+
+@mcp.tool()
+def list_events(period: str = "today") -> str:
+    """Lists calendar events. period: "today", "tomorrow", "this week", "next week", a weekday or a date."""
+    return _calendar(calendar_tools.list_events, period)
+
+
+@mcp.tool()
+def next_event() -> str:
+    """Tells the next upcoming calendar event."""
+    return _calendar(calendar_tools.next_event)
+
+
+@mcp.tool()
+def add_event(title: str, when: str, duration_minutes: str = "") -> str:
+    """Adds an event to the calendar. when: day and time such as "tomorrow at 3pm" or "Friday 10am". duration_minutes optional, default 60."""
+    return _calendar(calendar_tools.add_event, title, when, duration_minutes)
+
+
+@mcp.tool()
+def move_event(title: str, when: str) -> str:
+    """Moves an existing calendar event to a new day and time."""
+    return _calendar(calendar_tools.move_event, title, when)
+
+
+@mcp.tool()
+def cancel_event(title: str, when: str = "") -> str:
+    """Cancels (deletes) a calendar event by its title; when is optional to disambiguate."""
+    return _calendar(calendar_tools.cancel_event, title, when)
+
+
+@mcp.tool()
+def find_free_time(day: str = "today", minutes: str = "60") -> str:
+    """Finds free gaps in the calendar between 9 AM and 6 PM on a day, long enough for the given minutes."""
+    return _calendar(calendar_tools.find_free_time, day, minutes)
+
+
+@mcp.tool()
+def undo_calendar() -> str:
+    """Undoes the last calendar change SKYE made: removes an added event, restores a moved or cancelled one."""
+    return _calendar(calendar_tools.undo_calendar)
+
+
 if __name__ == "__main__":
     sys.stdout = _real_stdout
     mcp.run(transport="stdio")
+
