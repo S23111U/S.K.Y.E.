@@ -82,6 +82,19 @@ SKILLS = {
             ("move my standup to Friday at 10", '{"name": "move_event", "arguments": {"title": "standup", "when": "Friday at 10am"}}'),
         ],
     },
+    # Handled directly by core/einstein.py (Gemini extended thinking), not by a
+    # local tool call, so it has no manifest; the pattern is its explicit trigger.
+    "einstein": {
+        "ui": "einstein",
+        "direct": True,
+        "pattern": re.compile(
+            r"\beinstein\b|\bthink (?:really |very )?(?:hard|deeply|carefully)\b|\bthink it through\b|"
+            r"\bdeep(?:ly)? (?:think|dive|analy[sz]e)\b|\bin[- ]depth (?:explanation|analysis)\b",
+            re.IGNORECASE,
+        ),
+        "manifest": "",
+        "examples": [],
+    },
     "knowledge": {
         "ui": "knowledge",
         "pattern": re.compile(
@@ -108,6 +121,8 @@ STICKY_TURNS = 2
 def route_skill(text: str, sticky: str | None = None):
     """Skill name for a message, or None. `sticky` is the skill of the last
     turn(s): "undo that" or a bare follow-up should stay in it."""
+    if SKILLS["einstein"]["pattern"].search(text):
+        return "einstein"
     scores = {name: len(s["pattern"].findall(text)) for name, s in SKILLS.items()}
     best = max(scores, key=scores.get)
     if scores[best] > 0:

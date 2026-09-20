@@ -30,6 +30,7 @@ from core.protocol import frame, FrameReader
 from core import stt
 from core import tts_client as tts
 from core.mood import MoodClassifier, MOOD_PARAMS
+from core import einstein
 from core.skills import SKILLS, STICKY_TURNS, manifest_text, route_skill
 from scripts.ingest_history import ingest_all_logs
 from memory.tasks import format_due
@@ -906,6 +907,10 @@ def stream_skye_response(user_input: str):
         yield frame("done", text=rule_reply)
         return
 
+    if skill == "einstein":
+        yield from _einstein_turn(user_input, user_mood)
+        return
+
     # Past this point a real generation (and maybe a tool call) is about to
     # happen, which is exactly the gap a filler should cover. handle_client
     # speaks this in a background thread the moment it sees the frame, so it
@@ -1120,6 +1125,46 @@ def stream_skye_response(user_input: str):
     )
 
     yield frame("done", text=final_output)
+
+
+def _einstein_turn(user_input: str, user_mood: str):
+    """Einstein mode: a hard question goes to Gemini with extended thinking.
+    SKYE speaks a short summary; the full answer goes to the screen in a
+    `detail` frame. Only the question and a small background note are sent
+    (see core/einstein.py)."""
+    global SHARED_MESSAGES, LAST_TOOL_RESULT
+    LAST_TOOL_RESULT = ""
+    yield frame("skill", skill="einstein", ui=SKILLS["einstein"]["ui"])
+    LAST_TURN_TIMING["filler"] = einstein.FILLER
+    yield frame("filler", text=einstein.FILLER, mood="calm")
+    yield frame("start")
+
+    question = einstein.clean_question(user_input)
+    prev = None
+    for m in reversed(SHARED_MESSAGES):
+        if m["role"] == "user":
+            prev = m["content"].split("\n\n")[-1]
+            break
+    context = einstein.background(MEMORY.get_persistent_profile(), prev)
+
+    t0 = time.time()
+    try:
+        summary, detail, model = einstein.think(question, context)
+        sent = "Sent to Gemini (" + model + "): your question" + (" and a short background note." if context else " only.")
+        yield frame("detail", question=question, text=detail, note=sent)
+        reply = summary
+    except RuntimeError as e:
+        print(f"[einstein] failed: {e}")
+        reply = "I could not reach Gemini just now, so I could not think that through. Try again in a moment."
+    LAST_TURN_TIMING.update(turn=TURN_INDEX, tool="einstein", total_llm_ms=round((time.time() - t0) * 1000))
+
+    SHARED_MESSAGES.append({"role": "user", "content": user_input})
+    SHARED_MESSAGES.append({"role": "assistant", "content": reply})
+    if len(SHARED_MESSAGES) > 7:
+        SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+    _save_conversation_state()
+    save_telemetry(user_input, reply, [], False, "einstein", {"question": question})
+    yield frame("done", text=reply)
 
 
 def get_skye_response(user_input: str) -> str:

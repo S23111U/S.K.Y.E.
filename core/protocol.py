@@ -13,6 +13,7 @@ Frame types
   {"type": "tool",   "name": "tell_time"} a tool is being executed
   {"type": "done",   "text": "..."}       final CLEANED reply, guardrails applied
   {"type": "error",  "message": "..."}    something failed
+  {"type": "detail", "text": "...", "note": "..."}  Einstein mode: the long answer for the screen (the spoken reply is its short summary in "done")
 
 Clients that cannot stream may ignore every frame except "done", whose text is
 always the complete, sanitised reply. Clients that can stream should render

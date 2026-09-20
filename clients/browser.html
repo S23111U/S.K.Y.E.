@@ -70,6 +70,29 @@
     .cursor.active { display: inline-block; }
     @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
+
+    /* ── Einstein detail panel ── */
+    #detail-panel {
+      position: absolute; top: 72px; bottom: 96px; right: 24px; width: min(480px, 92vw); z-index: 30;
+      display: none; flex-direction: column;
+      background: color-mix(in srgb, var(--primary-color) 6%, rgba(255,255,255,0.92));
+      border: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+      backdrop-filter: blur(6px);
+    }
+    #detail-panel.show { display: flex; }
+    #detail-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px;
+      font-family: 'Share Tech Mono', monospace; font-size: 12px; letter-spacing: 2px; color: var(--primary-color);
+      border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 25%, transparent); }
+    #detail-close { background: none; border: none; color: var(--primary-color); font-size: 18px; cursor: pointer; }
+    #detail-body { overflow-y: auto; padding: 14px 16px; font-family: 'Inter', sans-serif; font-weight: 400;
+      font-size: 14px; line-height: 1.65; color: #3a2e05; }
+    #detail-body h3, #detail-body h4 { font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 2px;
+      color: var(--primary-color); margin: 14px 0 6px; }
+    #detail-body ul { margin: 6px 0 6px 18px; }
+    #detail-body p { margin: 6px 0; }
+    #detail-note { padding: 8px 14px; font-family: 'Share Tech Mono', monospace; font-size: 11px; opacity: 0.6;
+      color: var(--primary-color); border-top: 1px solid color-mix(in srgb, var(--primary-color) 20%, transparent); }
+
     /* ── QA Display ── */
     #qa-display {
       position: absolute; bottom: 80px; left: 0; right: 0; z-index: 20;
@@ -141,6 +164,7 @@
 </div>
 
 <!-- QA Display -->
+<div id="detail-panel"><div id="detail-head"><span>EINSTEIN MODE</span><button id="detail-close" title="Close">×</button></div><div id="detail-body"></div><div id="detail-note"></div></div>
 <div id="qa-display">
   <div class="qa-question" id="qa-q" style="display:none"></div>
   <div class="qa-answer"  id="qa-a" style="display:none"></div>
@@ -163,6 +187,7 @@
     health:    { primary: new THREE.Color(0xcc0000), secondary: new THREE.Color(0xff4444), atmosphere: new THREE.Color(0xff0000), cssPrim: '#cc0000', cssSec: '#ff4444', fog: 0xffdddd },
     knowledge: { primary: new THREE.Color(0xd9640a), secondary: new THREE.Color(0xffa04d), atmosphere: new THREE.Color(0xffc48a), cssPrim: '#d9640a', cssSec: '#ff9a45', fog: 0xfff3e6 },
     calendar:  { primary: new THREE.Color(0x7b3fc4), secondary: new THREE.Color(0xb98cf0), atmosphere: new THREE.Color(0xd2b3ff), cssPrim: '#7b3fc4', cssSec: '#a878e8', fog: 0xf4ecff },
+    einstein:  { primary: new THREE.Color(0xc99a06), secondary: new THREE.Color(0xffd54a), atmosphere: new THREE.Color(0xffe58a), cssPrim: '#b8860b', cssSec: '#f2b705', fog: 0xfff8df },
     finance:   { primary: new THREE.Color(0x0a8a4a), secondary: new THREE.Color(0x2ee6a0), atmosphere: new THREE.Color(0x66ffaa), cssPrim: '#0a8a4a', cssSec: '#2ee6a0', fog: 0xeafff2 }
   };
   let currentTarget = PALETTES.default;
@@ -423,6 +448,9 @@
         if(window.setSkyeText)window.setSkyeText('');
         if(busyQueue){ const t=busyQueue; busyQueue=''; input.value=t; send(); }
       }
+      else if(msg.type==='detail'){
+        showDetail(msg.text,msg.note);
+      }
       else if(msg.type==='skill'){
         // A specialised skill is answering: recolour for it, switch back to
         // default once SKYE has finished speaking (see revertSkillMode).
@@ -475,10 +503,32 @@
     qaA.innerHTML='<span class="typing-dots"><span></span><span></span><span></span></span>';
   }
 
+  // ── Einstein detail panel: the long answer SKYE does not read aloud ──
+  const detailPanel=document.getElementById('detail-panel'), detailBody=document.getElementById('detail-body'), detailNote=document.getElementById('detail-note');
+  document.getElementById('detail-close').onclick=()=>detailPanel.classList.remove('show');
+  function mdLite(t){
+    const esc=t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const inline=x=>x.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');
+    let out='',list=false;
+    for(const raw of esc.split('\n')){
+      const line=raw.trim(); let m;
+      if((m=line.match(/^[-*•]\s+(.*)/))||(m=line.match(/^\d+[.)]\s+(.*)/))){ if(!list){out+='<ul>';list=true;} out+='<li>'+inline(m[1])+'</li>'; continue; }
+      if(list){out+='</ul>';list=false;}
+      if((m=line.match(/^#{1,4}\s+(.*)/))) out+='<h3>'+inline(m[1])+'</h3>';
+      else if(line) out+='<p>'+inline(line)+'</p>';
+    }
+    return out+(list?'</ul>':'');
+  }
+  function showDetail(text,note){
+    detailBody.innerHTML=mdLite(text||''); detailBody.scrollTop=0;
+    detailNote.textContent=note||''; detailPanel.classList.add('show');
+  }
+
   function send(){
     const text=input.value.trim();
     if(!text||waiting||ws.readyState!==WebSocket.OPEN)return;
 
+    detailPanel.classList.remove('show');
     // Show question
     qaQ.style.display='block';
     void qaQ.offsetWidth; // re-trigger animation
