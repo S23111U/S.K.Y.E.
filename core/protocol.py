@@ -13,6 +13,7 @@ Frame types
   {"type": "tool",   "name": "tell_time"} a tool is being executed
   {"type": "done",   "text": "..."}       final CLEANED reply, guardrails applied
   {"type": "error",  "message": "..."}    something failed
+  {"type": "canvas", "title": "...", "blocks": [...]}  rich content for the screen: markdown, links, chart, agenda, table, image, video, audio (see mcp_server/canvas.py)
   {"type": "detail", "text": "...", "note": "..."}  Einstein mode: the long answer for the screen (the spoken reply is its short summary in "done")
 
 Clients that cannot stream may ignore every frame except "done", whose text is
@@ -25,6 +26,7 @@ Inbound (client -> server) frames
   {"type": "text",  "text": "..."}                                  typed input, or a client-confirmed transcript — triggers the LLM
   {"type": "audio", "pcm": "<base64 PCM>", "sample_rate": 16000}     a captured utterance (int16 mono PCM) — transcribed only, does NOT trigger the LLM
 
+  {"type": "presence", "asleep": true|false}                          sent every few seconds so SKYE never speaks up unprompted while asleep
   {"type": "cancel"}                                                  barge-in: stop speaking the current reply (synthesis halts after the sentence in progress; the turn still ends with a "turn_end")
 
 Every inbound message must be one of the above — there is no bare/unframed

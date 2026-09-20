@@ -19,6 +19,7 @@ Learning notes are read-only. Nothing here can delete data.
 Every function returns a complete sentence (or two) ready to be spoken.
 """
 
+import canvas
 import difflib
 import json
 import os
@@ -408,7 +409,8 @@ def expense_summary(period="", category=""):
     for r in rows:
         by_cat[r["category"]] = by_cat.get(r["category"], 0) + r["amount"]
     ranked = sorted(by_cat.items(), key=lambda kv: -kv[1])
-    return f"{lead} By category: {_join(f'{n} {_money(v)}' for n, v in ranked[:5])}."
+    text = f"{lead} By category: {_join(f'{n} {_money(v)}' for n, v in ranked[:5])}."
+    return canvas.attach(text, f"Spending, {label}", canvas.bar_chart(f"By category, {label}", [n for n, _ in ranked[:8]], [round(v, 2) for _, v in ranked[:8]], "dollars"))
 
 
 def list_expenses(period="", category="", limit="5"):

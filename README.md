@@ -109,6 +109,7 @@ jarvis/
 │   ├── notion_tools.py         # Notion: finance tracker, to-do list, learning notes
 │   ├── mac_tools.py            # Safari, Apple Music, Reminders, Notes, app launching
 │   ├── messages_tools.py       # iMessage/SMS, read only
+│   ├── canvas.py               # rich on-screen content (charts, agenda, links, media) attached to tool results
 │   └── calendar_tools.py       # Google Calendar: list, add, move, cancel, free time, undo
 │
 ├── tts_server/

@@ -408,6 +408,20 @@ def personality_saturated(text: str) -> bool:
 # RAW OUTPUT SANITISATION
 # =========================================================
 WEB_SOURCES_MARKER = "[WEB SOURCES]"
+CANVAS_MARKER = "\n[CANVAS]"
+
+
+def _split_canvas(text: str):
+    """(spoken text, canvas payload or None): tools append rich content for the
+    screen after this marker (see mcp_server/canvas.py); it is never spoken."""
+    if CANVAS_MARKER not in text:
+        return text, None
+    spoken, _, raw = text.partition(CANVAS_MARKER)
+    try:
+        return spoken, json.loads(raw)
+    except ValueError:
+        return spoken, None
+
 
 WEB_SYNTH_SYSTEM = (
     "You are S.K.Y.E., a dry, precise assistant. Answer the user's question "
@@ -1056,7 +1070,10 @@ def stream_skye_response(user_input: str):
             result = f"I am about to {_describe_action(tool, args)}. Shall I go ahead?"
         else:
             result = str(call_function_safe(tool, args))
+        result, _payload = _split_canvas(result)
         yield frame("tool", name=tool)
+        if _payload:
+            yield frame("canvas", **_payload)
         SHARED_MESSAGES.append({"role": "user", "content": user_input})
         SHARED_MESSAGES.append({"role": "assistant", "content": "CALL_FUNC: " + json.dumps({"name": tool, "arguments": args}, ensure_ascii=False)})
         if len(SHARED_MESSAGES) > 7:
@@ -1321,6 +1338,7 @@ def stream_skye_response(user_input: str):
         print(f"[guardrails fired: {guardrails}]")
     final_narration = guarded.strip()
 
+    canvas_payload = None
     # Tool Execution
     if tool_name in CONFIRM_TOOLS:
         _PENDING.update(tool=tool_name, args=tool_args or {}, at=time.time())
@@ -1335,6 +1353,7 @@ def stream_skye_response(user_input: str):
             else str(tool_reply)
         )
 
+        tool_reply_str, canvas_payload = _split_canvas(tool_reply_str)
         if tool_reply_str.startswith(WEB_SOURCES_MARKER):
             tool_reply_str = synthesize_web_answer(
                 user_input, (tool_args or {}).get("query", user_input), tool_reply_str
@@ -1411,6 +1430,8 @@ def stream_skye_response(user_input: str):
         total_llm_ms=round((_end - _t["start"]) * 1000),
     )
 
+    if tool_name and canvas_payload:
+        yield frame("canvas", **canvas_payload)
     yield frame("done", text=final_output)
 
 

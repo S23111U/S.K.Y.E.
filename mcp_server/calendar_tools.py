@@ -12,6 +12,7 @@ import re
 import time
 from datetime import datetime, timedelta
 
+import canvas
 import dateparser
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -270,7 +271,11 @@ def list_events(period="", until=""):
     head = f"You have {n} event{'s' if n != 1 else ''} {label}" if label.startswith(("today", "tomorrow", "this", "next", "over", "from")) \
         else f"You have {n} event{'s' if n != 1 else ''} on {label}"
     tail = f" And {n - LIST_CAP} more." if n > LIST_CAP else "."
-    return f"{head}: {spoken}{tail}"
+    rows = []
+    for e in evs[:12]:
+        st, ad = _start_of(e)
+        rows.append((("All day" if ad else _clock(st)) + (f", {_day_word(st)}" if multi_day else ""), e.get("summary", "Untitled")))
+    return canvas.attach(f"{head}: {spoken}{tail}", "Calendar", canvas.agenda(rows))
 
 
 def next_event():

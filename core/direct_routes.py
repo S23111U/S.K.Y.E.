@@ -19,6 +19,20 @@ _APPS = ("index 0", "index zero", "index", "safari", "music", "apple music", "no
          "mail", "calendar", "clock", "notion", "system settings", "settings", "finder", "facetime", "maps", "photos")
 _SITES = ("youtube", "google", "gmail", "github", "notion", "wikipedia", "reddit", "netflix", "amazon", "linkedin", "chatgpt")
 
+
+_PERIOD = r"(?P<p>today|tomorrow|tonight|this week|next week|this weekend|this month|last month|this year|all time|yesterday|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)"
+
+
+def _category(text):
+    c = re.search(r"\bon\s+([a-z][a-z ]{1,25}?)(?:\s+(?:this|last|in|today|for|during|so)\b|[.?!]*$)", text, I)
+    return c.group(1).strip() if c and c.group(1).strip().lower() not in ("my", "the", "it") else ""
+
+
+def _period(m):
+    p = (m.groupdict().get("p") or "").lower()
+    return "today" if p == "tonight" else p
+
+
 _RULES = [
     # "I want to study on Index 0" (Whisper may hear "index zero" / "index O")
     ("start_studying", re.compile(r"\b(?:study|studying|learn|learning|revise|revising)\b.{0,40}\bindex(?:\s+(?:0|zero|o))?\b|\bindex(?:\s+(?:0|zero|o))?\b.{0,25}\b(?:study|learn|revise)", I), lambda m: {}),
@@ -41,6 +55,16 @@ _RULES = [
     ("unread_messages", re.compile(r"\b(?:unread|new|missed) (?:messages?|texts?|imessages?)\b|\bany (?:new )?(?:messages?|texts?)\b|\bdo i have (?:any )?(?:new )?(?:messages?|texts?)\b", I), lambda m: {}),
     ("read_messages", re.compile(r"\bwhat did (?P<c>[\w' .-]+?) (?:text|message|say to) me\b|\b(?:messages?|texts?|imessages?) from (?P<c2>[\w' .-]+?)" + _END, I), lambda m: {"contact": (m.group("c") or m.group("c2") or "").strip()}),
     ("read_messages", re.compile(r"^(?!.*\b(?:send|write|reply|draft|compose)\b).*\b(?:read|check|show|open)\b.{0,20}\b(?:my |the )?(?:latest |last |recent |newest )?(?:messages?|texts?|imessages?)" + _END, I), lambda m: {}),
+
+    ("show_media", re.compile(r"\b(?:show|display|put up|pull up)\b.{0,20}(?P<u>https?://\S+)", I), lambda m: {"url": m.group("u")}),
+
+    ("next_event", re.compile(r"\b(?:what(?:'s| is)|when(?:'s| is)) my next (?:event|meeting|appointment)\b|\bnext (?:event|meeting|appointment)\b.{0,15}\?", I), lambda m: {}),
+    ("list_events", re.compile(r"\b(?:what(?:'s| is| do i have)? (?:on )?(?:my )?(?:calendar|schedule|agenda)|what do i have|(?:check|show|read|tell me)(?: me)? (?:my )?(?:calendar|schedule|agenda)|am i (?:busy|free)|(?:do i have|any) (?:any )?(?:events?|meetings?|appointments?|plans?|lectures?)) ?(?:on |for |this |next )?" + _PERIOD + r"\b", I), lambda m: {"period": _period(m)}),
+    ("list_events", re.compile(r"\bwhat(?:'s| is)? on my (?:calendar|schedule)" + _END, I), lambda m: {"period": "today"}),
+
+    ("expense_summary", re.compile(r"\b(?:how much (?:have i |did i |do i |i've )?(?:spent|spend)|(?:my )?(?:total )?(?:spending|expenses))\b(?:.*?\b" + _PERIOD + r"\b)?", I),
+     lambda m: {k: v for k, v in {"period": _period(m) or "this month", "category": _category(m.string)}.items() if v}),
+    ("list_todos", re.compile(r"\b(?:what(?:'s| is)|show|read|list|check)\b.{0,25}\b(?:to-?do(?:s| list)?|task list)\b", I), lambda m: {}),
 
     ("music_now_playing", re.compile(r"\b(?:what(?:'s| is) (?:playing|this song)|what song is (?:this|playing)|which song is this)\b", I), lambda m: {}),
     ("music_control", re.compile(r"^\W*(?:please\s+)?(?:(?P<a>pause|resume|skip)\b(?:\s+(?:the\s+)?(?:music|song|track|this song|it))?|(?P<a2>next|previous|stop)\s+(?:the\s+)?(?:music|song|track)|go back(?: a song)?|(?:play )?(?:the )?next (?:song|track)|(?:play )?(?:the )?previous (?:song|track)|(?:set )?(?:the )?volume (?:to |at )?(?P<v>\d+))" + _END, I),

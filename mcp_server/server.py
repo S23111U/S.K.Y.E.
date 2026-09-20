@@ -47,6 +47,7 @@ sys.path.insert(0, ROOT)
 
 import notion_tools
 import calendar_tools
+import canvas
 import mac_tools
 import messages_tools
 from memory.tasks import TaskStore, next_occurrence, format_due, parse_when, parse_duration
@@ -465,6 +466,7 @@ def web_search(query: str) -> str:
         # — web rows are not passively injected into ordinary chat.
         MEMORY.add_memory(f"[Web, {stamp}] {title} ({url}): {snippet}")
     result = "\n".join(lines)
+    result = canvas.attach(result, "Sources", canvas.links([(t, u, urlparse(u).netloc) for t, u, _, _ in sources[:5]]))
     _cache_store(query, result)
     return result
 
@@ -760,6 +762,7 @@ def morning_briefing() -> str:
     now = datetime.now()
     greet = "Good morning" if now.hour < 12 else "Good afternoon" if now.hour < 18 else "Good evening"
     parts = [f"{greet}."]
+    blocks = []
     for label, fn in (
         ("weather", lambda: get_weather("")),
         ("calendar", lambda: _calendar(calendar_tools.list_events, "today")),
@@ -770,13 +773,17 @@ def morning_briefing() -> str:
         except Exception as e:
             print(f"[briefing] {label} failed: {e}", file=sys.stderr)
             continue
+        out, payload = canvas.split(out or "")
+        if payload:
+            blocks.extend(payload.get("blocks", []))
         if out and "could not" not in out.lower() and "not connected" not in out.lower():
             parts.append(out if out.endswith((".", "!", "?")) else out + ".")
     end = datetime.now().replace(hour=23, minute=59)
     todays = [t for t in TASKS.get_upcoming(20) if datetime.fromisoformat(t["due_at"]) <= end]
     if todays:
         parts.append("Also today: " + "; ".join(f"{t['description']} at {datetime.fromisoformat(t['due_at']).strftime('%-I:%M %p')}" for t in todays[:4]) + ".")
-    return " ".join(parts)
+    text = " ".join(parts)
+    return canvas.attach(text, "Your day", *blocks) if blocks else text
 
 
 @mcp.tool()
@@ -830,6 +837,24 @@ def todo_nudge() -> str:
     n = len(items)
     names = ", ".join(t["name"] for t in items[:2])
     return f"You still have {n} thing{'s' if n != 1 else ''} open for today, such as {names}. Want to get started on one?"
+
+
+@mcp.tool()
+def show_media(url: str, title: str = "") -> str:
+    """Shows an image, video (file or YouTube link) or audio file on the screen from a web address."""
+    u = url.strip()
+    if not re.match(r"^https?://", u, re.I):
+        return "I need a full web address starting with http to show that."
+    yt = re.search(r"(?:youtube\.com/watch\?v=|youtu\.be/)([\w-]{11})", u)
+    if yt:
+        block = {"type": "video", "youtube": yt.group(1)}
+    elif re.search(r"\.(?:mp4|webm|mov)(?:\?|$)", u, re.I):
+        block = {"type": "video", "url": u}
+    elif re.search(r"\.(?:mp3|wav|m4a|ogg)(?:\?|$)", u, re.I):
+        block = {"type": "audio", "url": u}
+    else:
+        block = {"type": "image", "url": u, "caption": title}
+    return canvas.attach(f"Showing {title or 'that'} on the screen.", title or "Media", block)
 
 
 if __name__ == "__main__":
