@@ -209,6 +209,24 @@ QUESTION_LEAD_RE = re.compile(
 # almost instantly — there's no gap for a filler to fill, so one would land
 # after the real reply instead of before it.
 FILLER_MIN_WORDS = 4
+
+# Einstein mode is a switch, not a one-off: saying "Einstein mode" turns it on
+# and it stays on (gold UI) until he says to switch it off.
+_EINSTEIN_ON = False
+EINSTEIN_MODE_RE = re.compile(r"\beinstein\b", re.IGNORECASE)
+EINSTEIN_OFF_RE = re.compile(
+    r"\b(?:(?:switch|turn|shut|put|set|take|exit|leave|stop|disable|end|cancel)\b.{0,25}\beinstein\b|"
+    r"\beinstein(?: mode)?\b.{0,12}\b(?:off|over|done|stop|disabled)\b|(?:no more|enough) einstein)",
+    re.IGNORECASE,
+)
+# What is left of "use Einstein mode" once the switching words are removed: if
+# nothing real remains, he means "answer my last question that way".
+EINSTEIN_FILLER_WORDS = {
+    "use", "using", "switch", "switching", "turn", "on", "to", "the", "mode", "please", "now", "activate",
+    "enable", "go", "into", "with", "for", "that", "this", "it", "again", "try", "and", "can", "you",
+    "could", "einstein", "einsteins", "skye", "sky", "then", "so", "okay", "ok", "answer", "redo", "do",
+    "let", "lets", "let's", "me", "i", "want", "would", "like", "a", "an", "of", "in", "up", "over",
+}
 _last_filler = None
 
 
@@ -896,6 +914,16 @@ def stream_skye_response(user_input: str):
         _SKILL_STICKY[1] = max(0, _SKILL_STICKY[1] - 1)
     LAST_TURN_TIMING["skill"] = skill
 
+    global _EINSTEIN_ON
+    if EINSTEIN_MODE_RE.search(user_input) and EINSTEIN_OFF_RE.search(user_input):
+        _EINSTEIN_ON = False
+        LAST_TOOL_RESULT = ""
+        reply = "Einstein mode is off."
+        save_telemetry(user_input, reply, ["rule_bypass"], False)
+        yield frame("skill", skill="default", ui="default", lock=False)
+        yield frame("done", text=reply)
+        return
+
     ack = acknowledgement_reply(user_input)
     rule_reply = ack or rule_based_response(user_input)
     if rule_reply:
@@ -907,8 +935,12 @@ def stream_skye_response(user_input: str):
         yield frame("done", text=rule_reply)
         return
 
-    if skill == "einstein":
-        yield from _einstein_turn(user_input, user_mood)
+    toolish = skill is not None and skill != "einstein" or any(h in user_input.lower() for h in FILLER_TOOL_HINTS)
+    turned_on_now = bool(EINSTEIN_MODE_RE.search(user_input))
+    if turned_on_now:
+        _EINSTEIN_ON = True
+    if turned_on_now or skill == "einstein" or (_EINSTEIN_ON and not toolish):
+        yield from _einstein_turn(user_input, user_mood, switched_on=turned_on_now)
         return
 
     # Past this point a real generation (and maybe a tool call) is about to
@@ -1127,24 +1159,37 @@ def stream_skye_response(user_input: str):
     yield frame("done", text=final_output)
 
 
-def _einstein_turn(user_input: str, user_mood: str):
+def _einstein_turn(user_input: str, user_mood: str, switched_on: bool = False):
     """Einstein mode: a hard question goes to Gemini with extended thinking.
     SKYE speaks a short summary; the full answer goes to the screen in a
     `detail` frame. Only the question and a small background note are sent
-    (see core/einstein.py)."""
+    (see core/einstein.py). `switched_on` means he just said "Einstein mode":
+    with no question in that sentence, the previous question is re-answered."""
     global SHARED_MESSAGES, LAST_TOOL_RESULT
     LAST_TOOL_RESULT = ""
-    yield frame("skill", skill="einstein", ui=SKILLS["einstein"]["ui"])
-    LAST_TURN_TIMING["filler"] = einstein.FILLER
-    yield frame("filler", text=einstein.FILLER, mood="calm")
-    yield frame("start")
+    yield frame("skill", skill="einstein", ui=SKILLS["einstein"]["ui"], lock=bool(_EINSTEIN_ON) or None)
 
-    question = einstein.clean_question(user_input)
     prev = None
     for m in reversed(SHARED_MESSAGES):
         if m["role"] == "user":
             prev = m["content"].split("\n\n")[-1]
             break
+
+    question = einstein.clean_question(user_input)
+    rest = [w for w in re.findall(r"[a-z']+", question.lower()) if w not in EINSTEIN_FILLER_WORDS]
+    if switched_on and len(rest) < 2:
+        if not prev:
+            reply = "Einstein mode is on. What would you like me to think about?"
+            SHARED_MESSAGES.append({"role": "user", "content": user_input})
+            SHARED_MESSAGES.append({"role": "assistant", "content": reply})
+            save_telemetry(user_input, reply, ["rule_bypass"], False)
+            yield frame("done", text=reply)
+            return
+        question, prev = prev, None    # redo the last question properly
+
+    LAST_TURN_TIMING["filler"] = einstein.FILLER
+    yield frame("filler", text=einstein.FILLER, mood="calm")
+    yield frame("start")
     context = einstein.background(MEMORY.get_persistent_profile(), prev)
 
     t0 = time.time()

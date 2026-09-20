@@ -395,10 +395,10 @@
   // in flight for it must be discarded until its turn_end arrives — without
   // this the remaining sentences of an interrupted reply played anyway.
   let turnActive=false, dropAudio=false;
-  let skillMode=false, revertWhenIdle=false;
+  let skillMode=false, revertWhenIdle=false, modeLock=null;   // modeLock: Einstein mode stays on until switched off
   function revertSkillMode(){
     revertWhenIdle=false;
-    if(skillMode){ skillMode=false; if(window.setMode)window.setMode('default'); }
+    if(skillMode){ skillMode=false; if(window.setMode)window.setMode(modeLock||'default'); }
   }
   // Speech that arrives while SKYE is still generating a reply: kept and sent
   // once that reply's text is done, instead of being discarded.
@@ -454,8 +454,11 @@
       else if(msg.type==='skill'){
         // A specialised skill is answering: recolour for it, switch back to
         // default once SKYE has finished speaking (see revertSkillMode).
-        if(window.setMode)window.setMode(msg.ui||'default');
-        skillMode=!!msg.ui&&msg.ui!=='default';
+        if(msg.lock===true)modeLock=msg.ui;
+        else if(msg.lock===false)modeLock=null;
+        const ui=(msg.ui==='default'&&modeLock)?modeLock:(msg.ui||'default');
+        if(window.setMode)window.setMode(ui);
+        skillMode=ui!=='default'&&ui!==modeLock;
         revertWhenIdle=false;
       }
       else if(msg.type==='mood'){

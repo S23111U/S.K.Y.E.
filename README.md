@@ -163,7 +163,7 @@ Override the interpreter with `SKYE_TTS_PYTHON`. The voice is cloned from `asset
 
 **Google Calendar (optional).** In Google Cloud, enable the Calendar API, create an OAuth *Desktop app* client (add yourself as a test user) and save its JSON as `gcp-oauth.keys.json` in the repo root. Then run `python scripts/google_login.py` once and approve access; the token is kept in `memory/google_token.json` (both files are gitignored).
 
-**Einstein mode (optional, sends data to Google).** Say "Einstein mode, …" and only that question plus a short background note (study areas from your profile, your previous question) goes to Gemini with extended thinking; SKYE speaks a summary and the full answer appears in a gold panel. Needs `GOOGLE_API_KEY` in `.env`. `EINSTEIN_CONTEXT=off` sends the question alone; `EINSTEIN_MODELS` sets the fallback order.
+**Einstein mode (optional, sends data to Google).** Say "Einstein mode" (with a question, or on its own to redo the last answer deeply) to switch it on; it stays on (gold UI) until you say "switch Einstein mode off". Only that question plus a short background note (study areas from your profile, your previous question) goes to Gemini with extended thinking; SKYE speaks a summary and the full answer appears in a gold panel. Needs `GOOGLE_API_KEY` in `.env`. `EINSTEIN_CONTEXT=off` sends the question alone; `EINSTEIN_MODELS` sets the fallback order.
 
 ### 3. Configure Environment
 Create a `.env` file in the project root:
