@@ -70,9 +70,9 @@ SKILLS = {
         ),
         "manifest": (
             "Calendar tools (his Google Calendar; alarms and reminders are different): "
-            'list_events{"period"} · next_event{} · add_event{"title","when","duration_minutes"} · '
+            'list_events{"period","until"} · next_event{} · add_event{"title","when","duration_minutes"} · '
             'move_event{"title","when"} · cancel_event{"title"} · find_free_time{"day","minutes"} · '
-            "undo_calendar{}. period is today, tomorrow, this week, next week, a weekday or a date. "
+            "undo_calendar{}. period is today, tomorrow, this week, next week, a weekday or a date; for a span put the first day in period and the last day in until. If he asks about his calendar without a day, use today; never ask which day. Anything about his calendar or events uses these tools, never web_search. "
             'when is the day and time as he said it, such as "tomorrow at 3pm". Use undo_calendar when '
             "he says undo or scratch that after a calendar change. To just open the calendar website use open_calendar_web."
         ),

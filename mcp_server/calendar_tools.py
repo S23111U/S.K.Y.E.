@@ -74,11 +74,11 @@ def _now():
     return datetime.now().astimezone()
 
 
-def _parse_when(text):
+def _parse_when(text, day_only=False):
     """Natural language -> aware datetime in the future-leaning local zone."""
     dt = dateparser.parse(
         text or "",
-        settings={"PREFER_DATES_FROM": "future", "RELATIVE_BASE": datetime.now()},
+        settings={"PREFER_DATES_FROM": "future", "RELATIVE_BASE": (datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) - timedelta(minutes=1) if day_only else datetime.now())},
     )
     if dt is None:
         return None
@@ -102,9 +102,9 @@ def _day_range(text):
         return s, s + timedelta(days=7), "next week"
     if t in ("next 7 days", "coming week", "upcoming"):
         return now, now + timedelta(days=7), "over the next week"
-    d = _parse_when(t)
+    d = _parse_when(t, day_only=True)
     if d is None:
-        return midnight, midnight + timedelta(days=1), "today"
+        return None
     s = d.replace(hour=0, minute=0, second=0, microsecond=0)
     label = s.strftime("%A") if s - midnight < timedelta(days=7) else s.strftime("%B %-d")
     return s, s + timedelta(days=1), label
@@ -174,7 +174,7 @@ def _find(title, when=""):
     words = [w for w in re.findall(r"[a-z0-9']+", (title or "").lower()) if w not in
              {"the", "a", "an", "my", "meeting", "event", "appointment"}] or re.findall(r"[a-z0-9']+", (title or "").lower())
     if when:
-        s, e, _ = _day_range(when)
+        s, e, _ = _day_range(when) or (_now() - timedelta(hours=1), _now() + timedelta(days=60), "")
     else:
         s, e = _now() - timedelta(hours=1), _now() + timedelta(days=60)
     cands = []
@@ -236,17 +236,39 @@ def undo_calendar():
 # --------------------------------------------------------------------------
 # Tools
 # --------------------------------------------------------------------------
-def list_events(period=""):
-    start, end, label = _day_range(period)
+def _clean_range_word(text):
+    t = (text or "").strip().lower()
+    t = re.sub(r"^(?:from|between|on|for|till|until|to)\s+", "", t)
+    return t
+
+
+def list_events(period="", until=""):
+    """Events for a day, a week, or a span: `period` is the first day and
+    `until` (optional) the last day, inclusive."""
+    p = _clean_range_word(period)
+    # a span spoken in one string: "today to september 30", "from monday until friday"
+    m = re.split(r"\s+(?:to|till|until|through|and)\s+", p, maxsplit=1)
+    if len(m) == 2 and not until and re.search(r"\d|mon|tue|wed|thu|fri|sat|sun|tomorrow|today|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec", m[1]):
+        p, until = m
+    rng = _day_range(p)
+    if rng is None:
+        return "I could not work out which date you meant. Could you say it again?"
+    start, end, label = rng
+    if until:
+        u = _day_range(_clean_range_word(until))
+        if u is None:
+            return f"I could not work out the date {until}. That day may not exist."
+        end = max(end, u[1])
+        label = f"from {_day_word(start)} to {_day_word(end - timedelta(days=1))}"
     evs = _events(start, end)
     if not evs:
-        return f"You have nothing on your calendar {label}." if label.startswith(("today", "tomorrow", "this", "next", "over")) \
+        return f"You have nothing on your calendar {label}." if label.startswith(("today", "tomorrow", "this", "next", "over", "from")) \
             else f"You have nothing on your calendar on {label}."
     multi_day = (end - start) > timedelta(days=1)
     shown = evs[:LIST_CAP]
     spoken = _join(_spoken_event(e, with_day=multi_day) for e in shown)
     n = len(evs)
-    head = f"You have {n} event{'s' if n != 1 else ''} {label}" if label.startswith(("today", "tomorrow", "this", "next", "over")) \
+    head = f"You have {n} event{'s' if n != 1 else ''} {label}" if label.startswith(("today", "tomorrow", "this", "next", "over", "from")) \
         else f"You have {n} event{'s' if n != 1 else ''} on {label}"
     tail = f" And {n - LIST_CAP} more." if n > LIST_CAP else "."
     return f"{head}: {spoken}{tail}"
@@ -321,7 +343,7 @@ def cancel_event(title, when=""):
 
 def find_free_time(day="", minutes=""):
     """Free gaps between 9 AM and 6 PM on a day that fit the requested length."""
-    start, end, label = _day_range(day or "today")
+    start, end, label = _day_range(day or "today") or _day_range("today")
     try:
         need = int(float(minutes)) if str(minutes).strip() else 60
     except ValueError:

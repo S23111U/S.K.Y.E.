@@ -553,9 +553,9 @@ def _calendar(fn, *args):
 
 
 @mcp.tool()
-def list_events(period: str = "today") -> str:
-    """Lists calendar events. period: "today", "tomorrow", "this week", "next week", a weekday or a date."""
-    return _calendar(calendar_tools.list_events, period)
+def list_events(period: str = "today", until: str = "") -> str:
+    """Lists calendar events. period: "today", "tomorrow", "this week", "next week", a weekday or a date. For a span give the first day as period and the last day as until, such as period "today", until "September 30"."""
+    return _calendar(calendar_tools.list_events, period, until)
 
 
 @mcp.tool()
