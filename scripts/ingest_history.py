@@ -48,7 +48,7 @@ def ingest_all_logs(memory: MemoryManager = None):
                     # Answers derived from web_search are not durable facts:
                     # they go stale, and (seen in practice) a wrong one stored
                     # here gets recalled later in preference to a fresh search.
-                    if (data.get("response_stats") or {}).get("tool_dispatched") == "web_search":
+                    if (data.get("response_stats") or {}).get("tool_dispatched") in ("web_search", "read_messages", "unread_messages"):   # not durable facts / private
                         continue
                         
                     # We chunk the dialogue pair into a single semantic unit

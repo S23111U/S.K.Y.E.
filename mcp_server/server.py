@@ -48,6 +48,7 @@ sys.path.insert(0, ROOT)
 import notion_tools
 import calendar_tools
 import mac_tools
+import messages_tools
 from memory.tasks import TaskStore, next_occurrence, format_due, parse_when, parse_duration
 from memory.manager import MemoryManager
 
@@ -788,6 +789,47 @@ def event_alerts() -> str:
     except Exception as e:
         print(f"[calendar] alerts failed: {e}", file=sys.stderr)
         return ""
+
+
+# --- Messages (read only, see messages_tools.py) ---
+def _messages(fn, *args):
+    try:
+        return fn(*args)
+    except messages_tools.MessagesError as e:
+        print(f"[messages] {fn.__name__} failed: {e}", file=sys.stderr)
+        return messages_tools.NEED_ACCESS if re.search(r"unable to open|not permitted|authorization|denied", str(e), re.I) \
+            else "I could not read your messages just now."
+
+
+@mcp.tool()
+def read_messages(contact: str = "", limit: int = 4) -> str:
+    """Reads recent iMessage/SMS messages (read only). With a contact name, the latest exchange with them; otherwise the newest incoming messages."""
+    return _messages(messages_tools.read_messages, contact, limit)
+
+
+@mcp.tool()
+def unread_messages() -> str:
+    """Says how many unread messages there are and from whom."""
+    return _messages(messages_tools.unread_messages)
+
+
+@mcp.tool()
+def todo_nudge() -> str:
+    """Internal: a short nudge about what is still open for today (empty when nothing)."""
+    if not os.getenv("NOTION_TOKEN"):
+        return ""
+    try:
+        items = [t for t in notion_tools._todos() if t["status"] in ("For today", "In Progress") or
+                 (t["priority"] == "High" and t["status"] != "Done")]
+    except Exception as e:
+        print(f"[nudge] {e}", file=sys.stderr)
+        return ""
+    items = [t for t in items if t["status"] != "Done"]
+    if not items:
+        return ""
+    n = len(items)
+    names = ", ".join(t["name"] for t in items[:2])
+    return f"You still have {n} thing{'s' if n != 1 else ''} open for today, such as {names}. Want to get started on one?"
 
 
 if __name__ == "__main__":

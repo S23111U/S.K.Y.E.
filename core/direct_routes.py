@@ -38,6 +38,10 @@ _RULES = [
     ("set_reminder", re.compile(r"\bremind me\s+(?P<t>(?:at|in|on)\s+.+?)\s+to\s+(?P<task>.+?)" + _END, I), lambda m: {"time": m.group("t"), "task": m.group("task")}),
     ("set_reminder", re.compile(r"\bremind me\s+to\s+(?P<task>.+?)\s+(?P<t>(?:at|in|on|tomorrow|tonight|today|this)\b.+?)" + _END, I), lambda m: {"time": m.group("t"), "task": m.group("task")}),
 
+    ("unread_messages", re.compile(r"\b(?:unread|new|missed) (?:messages?|texts?|imessages?)\b|\bany (?:new )?(?:messages?|texts?)\b|\bdo i have (?:any )?(?:new )?(?:messages?|texts?)\b", I), lambda m: {}),
+    ("read_messages", re.compile(r"\bwhat did (?P<c>[\w' .-]+?) (?:text|message|say to) me\b|\b(?:messages?|texts?|imessages?) from (?P<c2>[\w' .-]+?)" + _END, I), lambda m: {"contact": (m.group("c") or m.group("c2") or "").strip()}),
+    ("read_messages", re.compile(r"^(?!.*\b(?:send|write|reply|draft|compose)\b).*\b(?:read|check|show|open)\b.{0,20}\b(?:my |the )?(?:latest |last |recent |newest )?(?:messages?|texts?|imessages?)" + _END, I), lambda m: {}),
+
     ("music_now_playing", re.compile(r"\b(?:what(?:'s| is) (?:playing|this song)|what song is (?:this|playing)|which song is this)\b", I), lambda m: {}),
     ("music_control", re.compile(r"^\W*(?:please\s+)?(?:(?P<a>pause|resume|skip)\b(?:\s+(?:the\s+)?(?:music|song|track|this song|it))?|(?P<a2>next|previous|stop)\s+(?:the\s+)?(?:music|song|track)|go back(?: a song)?|(?:play )?(?:the )?next (?:song|track)|(?:play )?(?:the )?previous (?:song|track)|(?:set )?(?:the )?volume (?:to |at )?(?P<v>\d+))" + _END, I),
      lambda m: {"action": (f"volume {m.group('v')}" if m.group("v") else (m.group("a") or m.group("a2") or ("previous" if "back" in m.group(0).lower() or "previous" in m.group(0).lower() else "next")).lower())}),

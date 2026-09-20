@@ -31,6 +31,7 @@ from core import stt
 from core import tts_client as tts
 from core.mood import MoodClassifier, MOOD_PARAMS
 from core import direct_routes, einstein
+from core.proactive import Proactive
 from core.skills import SKILLS, STICKY_TURNS, manifest_text, route_skill
 from scripts.ingest_history import ingest_all_logs
 from memory.tasks import format_due
@@ -765,6 +766,35 @@ def _fire_due_tasks():
             TASKS.mark_status(task["id"], "done")
 
 
+PROACTIVE = Proactive()
+_PROACTIVE_SAID = ""
+_last_proactive_check = 0.0
+BRIEFING_OFFER = "Good morning. Would you like your morning briefing?"
+
+
+def _proactive_tick():
+    """Unprompted check-ins (see core/proactive.py); at most once every 30 s."""
+    global _last_proactive_check
+    if time.time() - _last_proactive_check < 30:
+        return
+    _last_proactive_check = time.time()
+    with ACTIVE_CONNECTIONS_LOCK:
+        connected = bool(ACTIVE_CONNECTIONS)
+    text = PROACTIVE.tick(
+        connected,
+        todo_nudge=lambda: call_mcp_tool("todo_nudge", {}) if "todo_nudge" in TOOL_ROUTES else "",
+        briefing_offer=BRIEFING_OFFER if "morning_briefing" in TOOL_ROUTES else None,
+    )
+    if not text:
+        return
+    print(f"[Proactive]: {text}")
+    if text == BRIEFING_OFFER:      # "yes" then runs the briefing
+        _PENDING.update(tool="morning_briefing", args={}, at=time.time())
+    global _PROACTIVE_SAID
+    _PROACTIVE_SAID = text            # his next message is probably the answer to this
+    _broadcast_proactive(text)
+
+
 _last_event_check = 0.0
 
 
@@ -794,6 +824,7 @@ def _scheduler_loop():
             _run_daily_consolidation()
         _fire_due_tasks()
         _announce_events()
+        _proactive_tick()
         time.sleep(SCHEDULER_TICK_SECONDS)
 
 
@@ -1074,6 +1105,12 @@ def stream_skye_response(user_input: str):
         yield frame("done", text=result)
         return
 
+    _snooze_reply = PROACTIVE.observe(user_input)
+    if _snooze_reply:
+        save_telemetry(user_input, _snooze_reply, ["rule_bypass"], False)
+        yield frame("done", text=_snooze_reply)
+        return
+
     if _PENDING:
         held = dict(_PENDING)
         _PENDING.clear()
@@ -1144,6 +1181,8 @@ def stream_skye_response(user_input: str):
         LAST_TURN_TIMING["filler"] = filler[0]
         yield frame("filler", text=filler[0], mood=filler[1])
 
+    global _PROACTIVE_SAID
+    said_first, _PROACTIVE_SAID = _PROACTIVE_SAID, ""
     # Format user prompt, injecting past tool data if present
     if LAST_TOOL_RESULT:
         augmented_input = (
@@ -1154,6 +1193,8 @@ def stream_skye_response(user_input: str):
         LAST_TOOL_RESULT = ""
     else:
         augmented_input = user_input
+    if said_first:
+        augmented_input = f'[You had just asked him, unprompted: "{said_first}" His message below is probably his answer.]\n\n{augmented_input}'
 
     # Retrieve the persistent profile, relevant semantic memories, and any
     # pending tasks/reminders
@@ -1724,6 +1765,8 @@ def _handle_client_loop(conn, reader, send_lock):
                     if kind == "cancel":
                         # Barge-in: stop speaking the current reply.
                         state["cancel"].set({k: v for k, v in msg.items() if k != "type"})
+                    elif kind == "presence":
+                        PROACTIVE.asleep = bool(msg.get("asleep"))
                     elif kind == "audio":
                         pcm = base64.b64decode(msg["pcm"])
                         transcript = stt.transcribe_pcm(
@@ -1735,6 +1778,7 @@ def _handle_client_loop(conn, reader, send_lock):
                         user_speech = msg.get("text", "").strip()
                         if not user_speech:
                             continue
+                        PROACTIVE.last_input = time.time()
                         stt.remember(user_speech)
                         # A new request supersedes whatever is still being
                         # spoken from the previous one.

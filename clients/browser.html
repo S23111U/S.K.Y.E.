@@ -527,6 +527,9 @@
     detailNote.textContent=note||''; detailPanel.classList.add('show');
   }
 
+  // Tell the server whether SKYE is asleep, so it never speaks up unprompted while asleep.
+  setInterval(()=>{ try{ if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'presence',asleep:!!asleep})+'\n'); }catch(e){} }, 10000);
+
   function send(){
     const text=input.value.trim();
     if(!text||waiting||ws.readyState!==WebSocket.OPEN)return;

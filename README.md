@@ -99,12 +99,16 @@ jarvis/
 │   ├── stt.py                  # Whisper speech-to-text (MLX): vocabulary hints, noise/hallucination filter, logs/stt_*.jsonl
 │   ├── tts_client.py           # Talks to tts_server/ (Chatterbox Turbo voice)
 │   ├── mood.py                 # Picks a speaking mood per reply
+│   ├── direct_routes.py        # requests that map straight to a tool (timer, alarm, music, weather...) - no model guessing
+│   ├── proactive.py            # check-ins, task follow-ups, to-do nudges (rules + quiet hours)
 │   ├── einstein.py             # Einstein mode: opt-in deep thinking via Gemini
 │   └── skills.py               # Routes a request to a skill (its tools + UI colour)
 │
 ├── mcp_server/
 │   ├── server.py               # Tool server (MCP): time, weather, alarms, web search, tasks...
 │   ├── notion_tools.py         # Notion: finance tracker, to-do list, learning notes
+│   ├── mac_tools.py            # Safari, Apple Music, Reminders, Notes, app launching
+│   ├── messages_tools.py       # iMessage/SMS, read only
 │   └── calendar_tools.py       # Google Calendar: list, add, move, cancel, free time, undo
 │
 ├── tts_server/

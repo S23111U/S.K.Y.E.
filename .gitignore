@@ -17,3 +17,7 @@ memory/notion_undo.json
 gcp-oauth.keys.json
 memory/google_token.json
 memory/calendar_undo.json
+
+memory/proactive_state.json
+memory/routine.json
+memory/calendar_alerted.json
