@@ -9,9 +9,8 @@ scripts/google_login.py; the token is kept in memory/google_token.json.
 import json
 import os
 import re
-import sys
 import time
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 import dateparser
 

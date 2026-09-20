@@ -20,7 +20,6 @@ import os
 import queue
 import subprocess
 import threading
-import time
 
 import numpy as np
 

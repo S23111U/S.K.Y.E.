@@ -96,7 +96,7 @@ jarvis/
 ├── core/
 │   ├── core_v2.py              # Main production engine (Socket Server + CLI)
 │   ├── protocol.py             # Newline-delimited JSON frames (client <-> server)
-│   ├── stt.py                  # Whisper speech-to-text (MLX)
+│   ├── stt.py                  # Whisper speech-to-text (MLX): vocabulary hints, noise/hallucination filter, logs/stt_*.jsonl
 │   ├── tts_client.py           # Talks to tts_server/ (Chatterbox Turbo voice)
 │   ├── mood.py                 # Picks a speaking mood per reply
 │   ├── einstein.py             # Einstein mode: opt-in deep thinking via Gemini

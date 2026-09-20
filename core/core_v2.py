@@ -67,6 +67,7 @@ SAFETY_BLOCKLIST = {
 # SESSION / TELEMETRY STATE
 # =========================================================
 SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+stt.set_log_path(os.path.join(LOG_DIR, f"stt_{SESSION_ID}.jsonl"))
 TURN_INDEX = 0
 TELEMETRY_FILE = os.path.join(LOG_DIR, f"telemetry_{SESSION_ID}.jsonl")
 MODEL_LOCK = threading.Lock()
@@ -232,6 +233,21 @@ FILLER_MIN_WORDS = 4
 # and it stays on (gold UI) until he says to switch it off.
 _EINSTEIN_ON = False
 EINSTEIN_MODE_RE = einstein.MODE_RE
+# Weather is answered by the tool, always. The small model sometimes replied
+# from thin air ("partly cloudy") without calling it, which is a made-up fact.
+WEATHER_RE = re.compile(r"\b(?:weather|temperature|forecast|how (?:hot|cold|warm)|is it (?:raining|sunny|cold|hot|warm)|will it rain)\b", re.IGNORECASE)
+WEATHER_CITY_RE = re.compile(
+    r"\b(?:in|for|at|of)\s+([A-Za-z][A-Za-z .'-]*(?:,\s*[A-Za-z .'-]+)*?)\s*(?:right now|today|tonight|tomorrow|now|currently|at the moment|like)?\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
+# "Clear the conversation": really empties the short-term context. Long-term
+# memory and the profile are deliberately NOT wiped by a spoken phrase; the
+# reply says so instead of pretending, which is what the model used to do.
+CLEAR_RE = re.compile(
+    r"\b(?:(?:clear|reset|wipe|empty|delete|forget)\b.{0,20}\b(?:context|conversation|chat|history|everything (?:we|you)|this (?:chat|session))|"
+    r"(?:start|begin) (?:over|afresh|a new (?:conversation|chat))|new (?:conversation|chat)|fresh start)\b",
+    re.IGNORECASE,
+)
 # What is left of "use Einstein mode" once the switching words are removed: if
 # nothing real remains, he means "answer my last question that way".
 EINSTEIN_FILLER_WORDS = {
@@ -636,7 +652,7 @@ def _prune_logs():
     to its last 200 KB once it passes 2 MB."""
     try:
         cutoff = time.time() - TIMING_RETENTION_DAYS * 86400
-        for f in glob.glob(os.path.join(LOG_DIR, "timing_*.jsonl")):
+        for f in glob.glob(os.path.join(LOG_DIR, "timing_*.jsonl")) + glob.glob(os.path.join(LOG_DIR, "stt_*.jsonl")):
             if os.path.getmtime(f) < cutoff:
                 os.remove(f)
         tts_log = os.path.join(LOG_DIR, "tts_server.log")
@@ -830,7 +846,7 @@ def extract_function_call(raw_text):
             if not isinstance(arguments, dict):
                 arguments = {}
             return name, arguments, narration
-        except Exception as e:
+        except Exception:
             continue
     return None, None, raw_text
 
@@ -937,6 +953,38 @@ def stream_skye_response(user_input: str):
         reply = "Einstein mode is off."
         save_telemetry(user_input, reply, ["rule_bypass"], False)
         yield frame("skill", skill="default", ui="default", lock=False)
+        yield frame("done", text=reply)
+        return
+
+    if WEATHER_RE.search(user_input) and not re.search(r"\b(?:my notes|note)\b", user_input, re.IGNORECASE):
+        m = WEATHER_CITY_RE.search(user_input.strip())
+        city = re.sub(r"\s+(?:right now|today|tonight|tomorrow|now|currently|at the moment)$", "", m.group(1).strip(), flags=re.IGNORECASE) if m else ""
+        city = city if m and m.group(1).strip().lower() not in ("the", "my", "here", "today", "general") else ""
+        LAST_TOOL_RESULT = ""
+        _f = pick_filler(user_input, user_mood)
+        if _f:
+            LAST_TURN_TIMING["filler"] = _f[0]
+            yield frame("filler", text=_f[0], mood=_f[1])
+        result = str(call_function_safe("get_weather", {"city": city} if city else {}))
+        yield frame("tool", name="get_weather")
+        SHARED_MESSAGES.append({"role": "user", "content": user_input})
+        SHARED_MESSAGES.append({"role": "assistant", "content": 'CALL_FUNC: ' + json.dumps({"name": "get_weather", "arguments": {"city": city} if city else {}})})
+        if len(SHARED_MESSAGES) > 7:
+            SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+        _save_conversation_state()
+        save_telemetry(user_input, result, [], True, "get_weather", {"city": city})
+        yield frame("done", text=result)
+        return
+
+    if CLEAR_RE.search(user_input):
+        SHARED_MESSAGES = []
+        LAST_TOOL_RESULT = ""
+        _SKILL_STICKY[0], _SKILL_STICKY[1] = None, 0
+        _save_conversation_state()
+        reply = "Done, this conversation is cleared."
+        if re.search(r"\bmemor", user_input, re.IGNORECASE):
+            reply += " I keep my long-term memories and your profile, though. Tell me if there is something specific to forget."
+        save_telemetry(user_input, reply, ["rule_bypass"], False)
         yield frame("done", text=reply)
         return
 
@@ -1074,6 +1122,27 @@ def stream_skye_response(user_input: str):
 
     # Tool Extraction
     tool_name, tool_args, pure_narration = extract_function_call(raw_response)
+
+    # The model sometimes invents a tool ("tell_jokes") for something it should
+    # simply answer. Ask again, telling it there is no tool for this.
+    if tool_name and tool_name not in TOOL_ROUTES and tool_name not in SAFETY_BLOCKLIST:
+        print(f"[unknown tool {tool_name!r}: answering directly]")
+        retry = [dict(m) for m in SHARED_MESSAGES]
+        retry[-1]["content"] += "\n\n[There is no tool for this. Answer directly, in your own words, in one to three sentences.]"
+        with MODEL_LOCK:
+            retry_prompt = tokenizer.apply_chat_template(
+                retry, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            )
+            retry_text = ""
+            for chunk in stream_generate(model, tokenizer, prompt=retry_prompt, max_tokens=200):
+                retry_text += chunk.text
+        raw_response = retry_text.split("<turn|>")[0].strip()
+        tool_name, tool_args, pure_narration = extract_function_call(raw_response)
+        if tool_name:   # still a tool call: give up on it rather than loop
+            tool_name, tool_args, pure_narration = None, None, None
+            raw_response = "I do not have a tool for that, but I am happy to talk it through."
+        else:
+            yield frame("token", text=raw_response)
 
     # If a tool matched cleanly, pure_narration is set. Otherwise, we sanitise the raw string
     # to kill any broken CALL_FUNC artifacts.
@@ -1547,6 +1616,7 @@ def _handle_client_loop(conn, reader, send_lock):
                         user_speech = msg.get("text", "").strip()
                         if not user_speech:
                             continue
+                        stt.remember(user_speech)
                         # A new request supersedes whatever is still being
                         # spoken from the previous one.
                         state["cancel"].set({"reason": "superseded"})

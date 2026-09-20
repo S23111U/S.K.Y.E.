@@ -90,7 +90,7 @@ def get_weather(city: str = "") -> str:
         if not place:
             return f"I could not find a place called {city}."
         latitude, longitude = place["lat"], place["lon"]
-        name = place["name"] + (f", {place['state']}" if place.get("state") else "")
+        name = place["name"] + (f", {place['state']}" if place.get("state") and place["state"] != place["name"] else "")
     else:
         g = geocoder.ip("me")
         latitude, longitude = g.latlng

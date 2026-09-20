@@ -750,6 +750,11 @@
   // recent ambient level, so a noisy room (fan, keyboard) stops triggering.
   let noiseFloor=0.006;
   const NOISE_MULT=3.5;
+  // At start-up the floor is only a guess, and the browser's own auto-gain is
+  // still settling, which is why the first minutes felt worse. Measure the room
+  // for the first ~1.5 s (median, so a cough doesn't skew it).
+  let calibrating=true, calibLevels=[];
+  const CALIB_BLOCKS=35;
   // A single loud block shouldn't cut SKYE off or start capturing — a
   // momentary echo leak (before acoustic echo cancellation converges, right
   // at the start of a session) or a click/cough looks identical to speech
@@ -834,6 +839,15 @@
 
   function handleAudioBlock(data){
     const level=rms(data);
+    if(calibrating){
+      calibLevels.push(level);
+      if(calibLevels.length>=CALIB_BLOCKS){
+        calibLevels.sort((a,b)=>a-b);
+        noiseFloor=Math.min(0.02,Math.max(0.003,calibLevels[Math.floor(calibLevels.length/2)]));
+        calibrating=false;
+      }
+      if(level>0.08)calibrating=false;   // he is already talking: keep the default floor
+    }
     const overSkye=speaking&&!vadActive;   // could be an echo of SKYE's own voice
     const startThreshold=Math.max(VAD_ENERGY_THRESHOLD, noiseFloor*NOISE_MULT);
     const isSpeech=level>(overSkye?Math.max(VAD_BARGE_ENERGY,startThreshold):(vadActive?startThreshold*0.7:startThreshold));

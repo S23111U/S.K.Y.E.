@@ -5,7 +5,12 @@ machine, unlike the browser's SpeechRecognition (which streams raw mic
 audio to Apple/Google's cloud even though the rest of SKYE is offline).
 """
 
+import json
+import os
 import threading
+import time
+import wave
+from collections import deque
 
 import numpy as np
 import mlx_whisper
@@ -18,9 +23,48 @@ print("Loading Whisper (mlx-whisper)...")
 # than exposing a separate load-once object (unlike mlx_lm.load()). Warm it
 # up here against silence so the model download/compile happens at startup,
 # not on the first real utterance.
-_WARMUP = np.zeros(16000, dtype=np.float32)
-mlx_whisper.transcribe(_WARMUP, path_or_hf_repo=WHISPER_MODEL_REPO, language="en")
-print("✓ Whisper ONLINE")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _warmup_audio() -> np.ndarray:
+    """Real speech (the voice reference clip) exercises the whole decode path;
+    a second of silence, the old warm-up, leaves the first real utterance to
+    pay for compilation and decode-loop start-up."""
+    try:
+        with wave.open(os.path.join(ROOT, "assets", "reference_voice_short.wav")) as w:
+            raw = w.readframes(min(w.getnframes(), w.getframerate() * 6))
+            x = np.frombuffer(raw, dtype="<i2").astype(np.float32) / 32768.0
+            if w.getnchannels() > 1:
+                x = x.reshape(-1, w.getnchannels()).mean(axis=1)
+            return _resample_linear(x, w.getframerate(), 16000)
+    except Exception:
+        return np.zeros(16000, dtype=np.float32)
+
+
+# Words Whisper otherwise gets wrong ("Skye" -> "Kai"/"sky"). It is only a
+# hint about spelling and topic, not something it will say by itself.
+VOCAB_PROMPT = "Skye. Einstein mode. Notion, Google Calendar, to-do list, expenses, budget, weather, alarm, reminder."
+LOW_CONFIDENCE = -1.5
+QUIET_RMS = 0.04
+HALLUCINATIONS = {"thank you", "thanks", "thanks for watching", "thank you for watching", "you", "bye", "okay", "so", ""}
+_recent = deque(maxlen=2)   # what he said last: makes follow-ups consistent
+_log_path = None
+
+
+def set_log_path(path: str):
+    global _log_path
+    _log_path = path
+
+
+def remember(text: str):
+    """Feed back a committed utterance so the next transcription has context."""
+    t = (text or "").strip()
+    if t:
+        _recent.append(t[:160])
+
+
+def _prompt() -> str:
+    return (VOCAB_PROMPT + " " + " ".join(_recent)).strip()
 
 
 def _resample_linear(samples: np.ndarray, orig_rate: int, target_rate: int) -> np.ndarray:
@@ -45,11 +89,57 @@ def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000, dtype: str = "int
 
     samples = _resample_linear(samples, sample_rate, 16000)
 
+    t0 = time.time()
     with STT_LOCK:
         result = mlx_whisper.transcribe(
             samples,
             path_or_hf_repo=WHISPER_MODEL_REPO,
             language="en",
             fp16=True,
+            initial_prompt=_prompt(),
+            condition_on_previous_text=False,
         )
-    return result.get("text", "").strip()
+    text = result.get("text", "").strip()
+    segs = result.get("segments") or []
+    no_speech = max((g.get("no_speech_prob", 0) for g in segs), default=0)
+    logprob = sum(g.get("avg_logprob", 0) for g in segs) / len(segs) if segs else 0
+    dropped = None
+    # Whisper's own "this was not speech" test, applied across the whole clip:
+    # clicks, coughs and fan noise otherwise come back as "Ooh." or a stray
+    # "Thank you.".
+    if segs and no_speech > 0.6 and logprob < -1.0:
+        dropped = "not speech"
+    elif segs and max(g.get("compression_ratio", 0) for g in segs) > 2.4:
+        dropped = "repetitive"          # "rotrotrotrot..." loops
+    elif text and sum(ord(c) > 0x24F for c in text) / len(text) > 0.15:
+        dropped = "wrong script"        # English-only: Korean/Arabic/Chinese output is a hallucination
+    elif segs and logprob < LOW_CONFIDENCE:
+        # Whisper invents fluent nonsense from clicks and hiss; measured on
+        # synthetic noise its average log-probability was -7 to -9, against
+        # about -0.2 for real speech.
+        dropped = "low confidence"
+    elif text.lower().strip(" .!") in HALLUCINATIONS and float(np.sqrt(np.mean(samples ** 2))) < QUIET_RMS:
+        # Stock phrases Whisper emits for near-silence ("Thank you.", "you")
+        # are only believed when the audio was actually loud enough to be speech.
+        dropped = "stock phrase on quiet audio"
+    elif text.lower().strip(" .") in VOCAB_PROMPT.lower():
+        dropped = "echoed the prompt"
+    _log(len(samples) / 16000, text, no_speech, logprob, dropped, time.time() - t0)
+    return "" if dropped else text
+
+
+def _log(dur, text, no_speech, logprob, dropped, took):
+    """One line per utterance: what Whisper heard, how sure it was, and whether it was thrown away."""
+    if not _log_path:
+        return
+    try:
+        with open(_log_path, "a") as f:
+            f.write(json.dumps({"t": round(time.time(), 1), "audio_s": round(dur, 2), "took_s": round(took, 2),
+                                "text": text, "no_speech": round(float(no_speech), 2),
+                                "avg_logprob": round(float(logprob), 2), "dropped": dropped}) + "\n")
+    except OSError:
+        pass
+
+
+mlx_whisper.transcribe(_warmup_audio(), path_or_hf_repo=WHISPER_MODEL_REPO, language="en", initial_prompt=VOCAB_PROMPT)
+print("✓ Whisper ONLINE")
