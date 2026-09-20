@@ -98,6 +98,30 @@ SKILLS = {
         "manifest": "",
         "examples": [],
     },
+    "mac": {
+        "ui": "default",
+        "weight": 2,   # its phrases are specific ("add ... to my note"); beat a stray finance/todo word
+        "utterances": ["play some music on apple music", "add a note to my apple notes", "create a note about the meeting",
+                       "open the reminders app", "open safari and search for something", "what reminders do I have in the reminders app",
+                       "change my alarm to a different time", "cancel my timer"],
+        "pattern": re.compile(
+            r"\b(?:apple music|apple notes|reminders app|safari|(?:the |my )?music|(?:a |an )?(?:new )?note(?: called| about| on)|"
+            r"(?:add|append) .{0,40} to (?:my |the )?note|alarm|timer|snooze)\b",
+            re.IGNORECASE,
+        ),
+        "manifest": (
+            "Mac tools (his MacBook apps): music_play{\"query\"} · music_control{\"action\"} · music_now_playing{} · "
+            "open_in_safari{\"target\"} · open_app{\"name\"} · create_note{\"title\",\"body\"} · add_to_note{\"title\",\"text\"} · "
+            "find_notes{\"query\"} · read_apple_note{\"title\"} · list_mac_reminders{} · complete_mac_reminder{\"title\"} · "
+            "set_timer{\"duration\",\"label\"} · set_alarm{\"time\"} · change_alarm{\"which\",\"time\"} · cancel_alarm{\"which\"}. "
+            "music_control action is pause, resume, next, previous or \"volume 40\". "
+            "Never say something was done unless you called the tool for it."
+        ),
+        "examples": [
+            ("add eggs to my groceries note", '{"name": "add_to_note", "arguments": {"title": "groceries", "text": "eggs"}}'),
+            ("open the news in safari", '{"name": "open_in_safari", "arguments": {"target": "news"}}'),
+        ],
+    },
     "knowledge": {
         "utterances": ['what did I write in my lecture notes', 'summarise my notes on algorithms week three', 'find my study notes about networks', 'read my tutorial notes'],
         "ui": "knowledge",
@@ -157,7 +181,7 @@ def route_skill(text: str, sticky: str | None = None, embed=None):
     strings -> vectors) enables the embedding fallback."""
     if SKILLS["einstein"]["pattern"].search(text):
         return "einstein"
-    scores = {name: len(s["pattern"].findall(text)) for name, s in SKILLS.items()}
+    scores = {name: len(s["pattern"].findall(text)) * s.get("weight", 1) for name, s in SKILLS.items()}
     best = max(scores, key=scores.get)
     if scores[best] > 0:
         return best

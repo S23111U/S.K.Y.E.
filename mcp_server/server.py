@@ -47,7 +47,8 @@ sys.path.insert(0, ROOT)
 
 import notion_tools
 import calendar_tools
-from memory.tasks import TaskStore, next_occurrence, format_due
+import mac_tools
+from memory.tasks import TaskStore, next_occurrence, format_due, parse_when, parse_duration
 from memory.manager import MemoryManager
 
 load_dotenv(os.path.join(ROOT, ".env"))
@@ -113,22 +114,70 @@ def get_weather(city: str = "") -> str:
 
 @mcp.tool()
 def set_alarm(time: str) -> str:
-    """Sets an alarm for a given clock time, e.g. '7:30 AM'."""
-    try:
-        TASKS.add_task(f"Alarm: {time}", next_occurrence(time), source="explicit")
-    except Exception as e:
-        return f"Could not set alarm for {time} — {e}"
-    return f"Alarm set for {time}."
+    """Sets an alarm for a clock time such as "7:30 AM", "7am", "6:30 tomorrow"."""
+    due = parse_when(time, alarm=True)
+    if due is None:
+        return "I did not catch that time. Could you say it like 7 30 AM?"
+    TASKS.add_task(f"Alarm: {due.strftime('%-I:%M %p')}", due, source="explicit")
+    return f"Alarm set for {_when_words(due)}."
+
+
+@mcp.tool()
+def set_timer(duration: str, label: str = "") -> str:
+    """Starts a countdown timer. duration: "10 minutes", "an hour and a half", "90 seconds"."""
+    delta = parse_duration(duration)
+    if delta is None:
+        return "I did not catch how long the timer should be."
+    TASKS.add_task(f"Timer: {label.strip()}" if label.strip() else "Timer", datetime.now() + delta, source="explicit")
+    total = int(delta.total_seconds())
+    h, m, sec = total // 3600, (total % 3600) // 60, total % 60
+    words = " ".join(f"{n} {u}{'s' if n != 1 else ''}" for n, u in ((h, "hour"), (m, "minute"), (sec, "second")) if n)
+    return f"Timer set for {words}."
+
+
+@mcp.tool()
+def change_alarm(which: str, time: str) -> str:
+    """Moves an existing alarm, timer or reminder (matched by a word from its name, or "alarm") to a new time."""
+    due = parse_when(time, alarm="alarm" in which.lower() or not which.strip())
+    if due is None:
+        return "I did not catch the new time."
+    matches = TASKS.find_pending(which if which.lower() not in ("", "alarm", "the alarm", "my alarm") else "Alarm")
+    if not matches:
+        return f"I could not find {which or 'an alarm'} to change."
+    t = matches[0]
+    TASKS.set_due(t["id"], due)
+    if t["description"].startswith("Alarm"):
+        with_time = f"Alarm: {due.strftime('%-I:%M %p')}"
+        TASKS.conn.execute("UPDATE tasks SET description = ? WHERE id = ?", (with_time, t["id"]))
+        TASKS.conn.commit()
+    return f"Moved it to {_when_words(due)}."
+
+
+@mcp.tool()
+def cancel_alarm(which: str = "") -> str:
+    """Cancels an alarm, timer or reminder matched by a word from its name. With no name, the next alarm."""
+    matches = TASKS.find_pending(which if which.lower() not in ("", "alarm", "the alarm", "my alarm", "timer", "the timer") else
+                                 ("Timer" if "timer" in which.lower() else "Alarm"))
+    if not matches:
+        return f"I could not find {which or 'an alarm'} to cancel."
+    TASKS.mark_status(matches[0]["id"], "dismissed")
+    return f"Cancelled {matches[0]['description']}."
 
 
 @mcp.tool()
 def set_reminder(time: str, task: str) -> str:
-    """Sets a reminder for a given clock time with a description of the task."""
+    """Sets a reminder for a time ("7pm", "tomorrow at 8", "in 20 minutes") with what to remember. SKYE speaks it when due and it is added to the Reminders app."""
+    due = parse_when(time)
+    if due is None:
+        return "I did not catch when. Could you say the time again?"
+    TASKS.add_task(task, due, source="explicit")
+    extra = ""
     try:
-        TASKS.add_task(task, next_occurrence(time), source="explicit")
+        mac_tools.add_mac_reminder(task, time)
     except Exception as e:
-        return f"Could not set reminder '{task}' — {e}"
-    return f"Reminder set: {task} at {time}."
+        print(f"[mac] Reminders sync skipped: {e}", file=sys.stderr)
+        extra = ""
+    return f"Reminder set: {task}, {_when_words(due)}."
 
 
 @mcp.tool()
@@ -156,6 +205,10 @@ def fetch_news(query: str) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"Error fetching news: {e}"
+
+
+def _when_words(dt):
+    return mac_tools._when_words(dt)
 
 
 def _web_open_and_ack(site_key, query=None):
@@ -611,6 +664,130 @@ def find_free_time(day: str = "today", minutes: str = "60") -> str:
 def undo_calendar() -> str:
     """Undoes the last calendar change SKYE made: removes an added event, restores a moved or cancelled one."""
     return _calendar(calendar_tools.undo_calendar)
+
+
+# --- macOS apps (see mac_tools.py) ---
+def _mac(fn, *args):
+    """Runs a Mac tool; failures become a spoken sentence."""
+    try:
+        return fn(*args)
+    except mac_tools.MacError as e:
+        print(f"[mac] {fn.__name__} failed: {e}", file=sys.stderr)
+        msg = str(e)
+        return ("I need permission first: " + msg.split("permission needed: ", 1)[1] + ".") if msg.startswith("permission needed") \
+            else "I could not do that on the Mac just now."
+    except Exception as e:
+        print(f"[mac] {fn.__name__} crashed: {e}", file=sys.stderr)
+        return "I could not do that on the Mac just now."
+
+
+@mcp.tool()
+def open_in_safari(target: str) -> str:
+    """Opens a website in Safari. target: a site name ("youtube", "gmail"), an address, or search words."""
+    return _mac(mac_tools.open_in_safari, target)
+
+
+@mcp.tool()
+def open_app(name: str) -> str:
+    """Opens a Mac app: INDEX 0, Safari, Music, Notes, Reminders, Messages, Mail, Calendar, Clock, Notion, System Settings, FaceTime."""
+    return _mac(mac_tools.open_app, name)
+
+
+@mcp.tool()
+def start_studying() -> str:
+    """Opens INDEX 0 for studying and suggests what to study (from the to-do list and roadmap)."""
+    return _mac(mac_tools.start_studying)
+
+
+@mcp.tool()
+def music_play(query: str) -> str:
+    """Plays a song, artist or album from the Apple Music library (opens Apple Music search if it is not in the library)."""
+    return _mac(mac_tools.music_play, query)
+
+
+@mcp.tool()
+def music_control(action: str) -> str:
+    """Controls Apple Music: pause, resume, next, previous, or "volume 40"."""
+    return _mac(mac_tools.music_control, action)
+
+
+@mcp.tool()
+def music_now_playing() -> str:
+    """Says what is playing in Apple Music."""
+    return _mac(mac_tools.music_now_playing)
+
+
+@mcp.tool()
+def list_mac_reminders() -> str:
+    """Lists open items in the Apple Reminders app."""
+    return _mac(mac_tools.list_mac_reminders)
+
+
+@mcp.tool()
+def complete_mac_reminder(title: str) -> str:
+    """Marks an Apple Reminders item as done."""
+    return _mac(mac_tools.complete_mac_reminder, title)
+
+
+@mcp.tool()
+def create_note(title: str, body: str = "") -> str:
+    """Creates a note in the Apple Notes app."""
+    return _mac(mac_tools.create_note, title, body)
+
+
+@mcp.tool()
+def add_to_note(title: str, text: str) -> str:
+    """Appends text to an existing Apple Notes note."""
+    return _mac(mac_tools.add_to_note, title, text)
+
+
+@mcp.tool()
+def find_notes(query: str) -> str:
+    """Finds Apple Notes notes by title."""
+    return _mac(mac_tools.find_notes, query)
+
+
+@mcp.tool()
+def read_apple_note(title: str) -> str:
+    """Reads the start of an Apple Notes note aloud."""
+    return _mac(mac_tools.read_note, title)
+
+
+@mcp.tool()
+def morning_briefing() -> str:
+    """The day at a glance: greeting, weather, calendar events, to-dos and alarms."""
+    now = datetime.now()
+    greet = "Good morning" if now.hour < 12 else "Good afternoon" if now.hour < 18 else "Good evening"
+    parts = [f"{greet}."]
+    for label, fn in (
+        ("weather", lambda: get_weather("")),
+        ("calendar", lambda: _calendar(calendar_tools.list_events, "today")),
+        ("todos", lambda: _notion(notion_tools.list_todos, "for today") if os.getenv("NOTION_TOKEN") else ""),
+    ):
+        try:
+            out = fn()
+        except Exception as e:
+            print(f"[briefing] {label} failed: {e}", file=sys.stderr)
+            continue
+        if out and "could not" not in out.lower() and "not connected" not in out.lower():
+            parts.append(out if out.endswith((".", "!", "?")) else out + ".")
+    end = datetime.now().replace(hour=23, minute=59)
+    todays = [t for t in TASKS.get_upcoming(20) if datetime.fromisoformat(t["due_at"]) <= end]
+    if todays:
+        parts.append("Also today: " + "; ".join(f"{t['description']} at {datetime.fromisoformat(t['due_at']).strftime('%-I:%M %p')}" for t in todays[:4]) + ".")
+    return " ".join(parts)
+
+
+@mcp.tool()
+def event_alerts() -> str:
+    """Internal: announcements for calendar events starting soon (empty when none)."""
+    if not calendar_tools.connected():
+        return ""
+    try:
+        return " ".join(calendar_tools.due_alerts(10))
+    except Exception as e:
+        print(f"[calendar] alerts failed: {e}", file=sys.stderr)
+        return ""
 
 
 if __name__ == "__main__":

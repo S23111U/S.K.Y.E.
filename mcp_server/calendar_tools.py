@@ -363,3 +363,30 @@ def find_free_time(day="", minutes=""):
         return f"You have no free {need} minute slot between 9 and 6 {label}."
     shown = _join(f"{_clock(a)} to {_clock(b)}" for a, b in gaps[:3])
     return f"You are free {label} from {shown}."
+
+
+# --------------------------------------------------------------------------
+# Spoken heads-up before an event
+# --------------------------------------------------------------------------
+ALERTED_FILE = os.path.join(ROOT, "memory", "calendar_alerted.json")
+
+
+def due_alerts(lead_minutes=10):
+    """Sentences for events starting within `lead_minutes` that have not been
+    announced yet. Each event is announced once."""
+    now = _now()
+    try:
+        seen = json.load(open(ALERTED_FILE))
+    except (OSError, ValueError):
+        seen = {}
+    seen = {k: v for k, v in seen.items() if v > time.time() - 86400}
+    out = []
+    for ev in _events(now, now + timedelta(minutes=lead_minutes + 1)):
+        start, all_day = _start_of(ev)
+        if all_day or ev["id"] in seen or start <= now - timedelta(minutes=1):
+            continue
+        mins = max(1, round((start - now).total_seconds() / 60))
+        out.append(f"Heads up: {ev.get('summary', 'an event')} starts in {mins} minute{'s' if mins != 1 else ''}.")
+        seen[ev["id"]] = time.time()
+    json.dump(seen, open(ALERTED_FILE, "w"))
+    return out

@@ -30,7 +30,7 @@ from core.protocol import frame, FrameReader
 from core import stt
 from core import tts_client as tts
 from core.mood import MoodClassifier, MOOD_PARAMS
-from core import einstein
+from core import direct_routes, einstein
 from core.skills import SKILLS, STICKY_TURNS, manifest_text, route_skill
 from scripts.ingest_history import ingest_all_logs
 from memory.tasks import format_due
@@ -588,7 +588,8 @@ print("✓ TTS ONLINE\n")
 # fixed hour.
 CONSOLIDATION_STATE_FILE = os.path.join(LOG_DIR, ".consolidation_state.json")
 CONSOLIDATION_INTERVAL = timedelta(hours=20)
-SCHEDULER_TICK_SECONDS = 60
+SCHEDULER_TICK_SECONDS = 5      # timers are set in seconds, so a minute-long tick would be visibly late
+EVENT_ALERT_EVERY_S = 60
 
 
 def _consolidation_due() -> bool:
@@ -737,9 +738,21 @@ def _notify_os(title: str, message: str):
         notification.notify(title=title, message=message, app_name="SKYE", timeout=10)
 
 
+def _spoken_task(description: str) -> str:
+    """What SKYE says when a stored task comes due."""
+    d = description.strip()
+    m = re.match(r"Alarm:\s*(.+)", d)
+    if m:
+        return f"It is {m.group(1)}. Your alarm is going off."
+    m = re.match(r"Timer(?::\s*(.+))?$", d)
+    if m:
+        return f"Your {m.group(1)} timer is up." if m.group(1) else "Your timer is up."
+    return f"Reminder: {d}"
+
+
 def _fire_due_tasks():
     for task in TASKS.get_due():
-        message = task["description"]
+        message = _spoken_task(task["description"])
         print(f"[Scheduler]: Task due — {message}")
         try:
             _notify_os("SKYE", message)
@@ -752,11 +765,35 @@ def _fire_due_tasks():
             TASKS.mark_status(task["id"], "done")
 
 
+_last_event_check = 0.0
+
+
+def _announce_events():
+    """A spoken heads-up shortly before a calendar event (see calendar_tools.due_alerts)."""
+    global _last_event_check
+    if time.time() - _last_event_check < EVENT_ALERT_EVERY_S or "event_alerts" not in TOOL_ROUTES:
+        return
+    _last_event_check = time.time()
+    try:
+        text = call_mcp_tool("event_alerts", {})
+    except Exception as e:
+        print(f"[Scheduler]: event alerts failed: {e}")
+        return
+    if text and text.strip():
+        print(f"[Scheduler]: {text}")
+        try:
+            _notify_os("SKYE", text)
+        except Exception:
+            pass
+        _broadcast_proactive(text)
+
+
 def _scheduler_loop():
     while True:
         if _consolidation_due():
             _run_daily_consolidation()
         _fire_due_tasks()
+        _announce_events()
         time.sleep(SCHEDULER_TICK_SECONDS)
 
 
@@ -977,6 +1014,26 @@ def stream_skye_response(user_input: str):
         save_telemetry(user_input, reply, ["rule_bypass"], False)
         yield frame("skill", skill="default", ui="default", lock=False)
         yield frame("done", text=reply)
+        return
+
+    direct = direct_routes.match(user_input)
+    if direct:
+        tool, args = direct
+        LAST_TOOL_RESULT = ""
+        if tool in CONFIRM_TOOLS:
+            _PENDING.update(tool=tool, args=args, at=time.time())
+            result = f"I am about to {_describe_action(tool, args)}. Shall I go ahead?"
+        else:
+            result = str(call_function_safe(tool, args))
+        yield frame("tool", name=tool)
+        SHARED_MESSAGES.append({"role": "user", "content": user_input})
+        SHARED_MESSAGES.append({"role": "assistant", "content": "CALL_FUNC: " + json.dumps({"name": tool, "arguments": args}, ensure_ascii=False)})
+        if len(SHARED_MESSAGES) > 7:
+            SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+        _save_conversation_state()
+        LAST_TURN_TIMING.update(tool=tool, skill="direct")
+        save_telemetry(user_input, result, [], True, tool, args)
+        yield frame("done", text=result)
         return
 
     if (TIME_RE.search(user_input) or DATE_RE.search(user_input)) and len(user_input.split()) <= 9:
@@ -1436,16 +1493,6 @@ def rule_based_response(speech: str):
         for g in ["hi skye", "hello skye", "good morning skye", "good evening skye"]
     ):
         return greeting()
-    if s.startswith("open "):
-        target = s.split("open ", 1)[1].strip()
-        sites = {
-            "youtube": "https://youtube.com",
-            "google": "https://google.com",
-            "spotify": "https://open.spotify.com",
-        }
-        if target in sites:
-            webbrowser.open(sites[target])
-            return f"Opening {target}, Sir..."
     return None
 
 

@@ -8,6 +8,7 @@ ORM, matching the project's minimal-dependency approach.
 """
 
 import os
+import re
 import sqlite3
 from datetime import datetime, timedelta
 
@@ -30,6 +31,58 @@ def next_occurrence(time_str, fmt="%I:%M %p"):
     if due_at <= datetime.now():
         due_at += timedelta(days=1)
     return due_at
+
+
+def parse_when(text, alarm=False):
+    """Natural time -> the next datetime it happens: "7am", "6:30 pm", "in 20
+    minutes", "tomorrow at 8". Returns None if it cannot be understood. The old
+    strict "7:30 AM" format is still accepted (it is a subset of this)."""
+    import dateparser
+    t = (text or "").strip()
+    if not t:
+        return None
+    try:
+        return next_occurrence(t)
+    except ValueError:
+        pass
+    # "at 8", "tomorrow at 7:30", "6": no am/pm given. Mornings are the usual
+    # case for 7-11, afternoons for 1-6; dateparser gets these wrong.
+    m = re.fullmatch(r"(?:(today|tomorrow|tonight)\s+)?(?:at\s+)?(\d{1,2})(?::(\d{2}))?", t.lower())
+    if m:
+        day, hour, minute = m.group(1), int(m.group(2)), int(m.group(3) or 0)
+        if hour <= 12 and minute < 60:
+            if day == "tonight" and hour < 12:
+                hour += 12
+            elif hour <= 6 and not alarm:   # an alarm at 6:45 means the morning
+                hour += 12
+            elif hour == 12:
+                pass
+            base = datetime.now().replace(hour=hour % 24, minute=minute, second=0, microsecond=0)
+            if day == "tomorrow" or base <= datetime.now():
+                base += timedelta(days=1)
+            return base
+    dt = dateparser.parse(t, settings={"PREFER_DATES_FROM": "future", "RELATIVE_BASE": datetime.now()})
+    if dt is None:
+        return None
+    if dt.tzinfo:
+        dt = dt.astimezone().replace(tzinfo=None)
+    # a bare clock time that already passed today means tomorrow
+    if dt <= datetime.now() and not re.search(r"\b(?:yesterday|ago|last)\b", t, re.IGNORECASE):
+        dt += timedelta(days=1)
+    return dt
+
+
+def parse_duration(text):
+    """"10 minutes", "an hour and a half", "90 seconds", "1h30m" -> timedelta or None."""
+    t = (text or "").lower().replace("half an hour", "30 minutes").replace("an hour and a half", "90 minutes")
+    t = re.sub(r"\ba\b|\ban\b", "1", t)
+    total, found = 0, False
+    for num, unit in re.findall(r"(\d+(?:\.\d+)?)\s*(hours?|hrs?|h|minutes?|mins?|m|seconds?|secs?|s)\b", t):
+        n = float(num)
+        u = unit[0]
+        total += n * {"h": 3600, "m": 60, "s": 1}[u]
+        found = True
+    return timedelta(seconds=total) if found and total > 0 else None
 
 
 def format_due(due_at_iso: str) -> str:
@@ -105,6 +158,18 @@ class TaskStore:
             {"id": r[0], "description": r[1], "due_at": r[2], "recurrence": r[3]}
             for r in rows
         ]
+
+    def find_pending(self, match=""):
+        """All pending tasks whose description contains `match` (all if empty), soonest first."""
+        rows = self.conn.execute(
+            "SELECT id, description, due_at FROM tasks WHERE status = 'pending' AND description LIKE ? ORDER BY due_at ASC",
+            (f"%{match}%",),
+        ).fetchall()
+        return [{"id": r[0], "description": r[1], "due_at": r[2]} for r in rows]
+
+    def set_due(self, task_id, due_at):
+        self.conn.execute("UPDATE tasks SET due_at = ? WHERE id = ?", (due_at.isoformat(), task_id))
+        self.conn.commit()
 
     def mark_status(self, task_id, status):
         self.conn.execute("UPDATE tasks SET status = ? WHERE id = ?", (status, task_id))
