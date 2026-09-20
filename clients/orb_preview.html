@@ -93,7 +93,7 @@ const R = 1.0;
 // carrying the iris and the radial spokes, and a spherical shell of circuit
 // detail whose meridians converge on that axis' poles. In the references the
 // disc is seen nearly face-on, tilted a little.
-const AXIS_TILT_X = -1.24, AXIS_TILT_Z = 0.15;
+const AXIS_TILT_X = -0.20, AXIS_TILT_Z = 0.10;
 const disc = new THREE.Group(); disc.rotation.set(AXIS_TILT_X, 0, AXIS_TILT_Z); orb.add(disc);
 const shell = new THREE.Group(); shell.rotation.set(AXIS_TILT_X, 0, AXIS_TILT_Z); orb.add(shell);
 
@@ -186,161 +186,165 @@ function ribbonMesh(segs, { width = 1.7, driftAmt = 0, bright = 1, flicker = 1, 
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// 1. The disc: iris, radial spokes, rim rings.  In the stills this is the
-//    dominant read — an eye with straight spokes fanning out to a big ring.
+// 1. Concentric tracks.  The design is a sphere whose detail is organised
+//    into circles of latitude about one axis; seen down that axis (how the
+//    reference is framed) they read as ~30 concentric rings that bunch up
+//    toward the rim.  Everything else — circuit detail, rungs, nodes —
+//    hangs off those tracks, which is why the look is so ordered.
 // ══════════════════════════════════════════════════════════════════════
-const IRIS_R = 0.17;
-const discSegs = new Segs();
-const P = (r, a) => new V3(Math.cos(a) * r, 0, Math.sin(a) * r);   // disc lies in XZ
+// r is the projected radius (0 at the pole facing us, 1 at the silhouette);
+// side +1 is the near hemisphere, -1 the far one.
+const pt = (r, a, side = 1) =>
+  new V3(Math.cos(a) * r, Math.sin(a) * r, side * Math.sqrt(Math.max(0, 1 - r * r)));
 
-// -- iris: concentric broken rings around a dark pupil, plus fine tick marks
-function irisRing(r, width, gaps, col, bright) {
-  const N = 150;
+const trackSegs = new Segs();
+
+// Gaps: each track is broken by a few angular slices, and the big outer rings
+// carry one wide gap so the silhouette reads as a C rather than a closed ring.
+function makeGaps(count, wide) {
+  const g = [];
+  for (let i = 0; i < count; i++) {
+    const a = rnd(0, Math.PI * 2), w = wide && i === 0 ? rnd(0.5, 1.5) : rnd(0.08, 0.45);
+    g.push([a, a + w]);
+  }
+  return g;
+}
+const inGap = (a, gaps) => gaps.some(([s0, e0]) => {
+  const aa = ((a % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+  return (aa > s0 && aa < e0) || (aa + Math.PI * 2 > s0 && aa + Math.PI * 2 < e0);
+});
+
+function track(r, side, opts) {
+  const { col, width, dash, gaps, density } = opts;
+  const N = Math.max(90, Math.round(density * r * 320));
   for (let i = 0; i < N; i++) {
-    const a0 = i / N * Math.PI * 2, a1 = (i + 0.85) / N * Math.PI * 2;
-    // gaps: a few angular slices are missing, which is what makes it read
-    // as an aperture rather than a plain circle
-    let skip = false;
-    for (const [gs, ge] of gaps) if (a0 > gs && a0 < ge) skip = true;
-    if (skip) continue;
-    discSegs.add(P(r, a0), P(r, a1), col.clone().multiplyScalar(bright), Math.random() * 0.25, width);
-  }
-}
-irisRing(0.090, 3.4, [[1.1, 1.5]], HOT, 1.0);
-irisRing(0.120, 2.6, [[3.4, 4.0], [0.2, 0.45]], HOT, 0.9);
-irisRing(0.152, 4.2, [[2.2, 2.9]], GOLD, 1.0);
-irisRing(0.188, 2.2, [[5.0, 5.6]], GOLD, 0.8);
-irisRing(0.228, 3.0, [[0.8, 1.3], [4.1, 4.5]], AMBER, 0.9);
-// aperture teeth: short radial ticks around the iris
-for (let i = 0; i < 46; i++) {
-  const a = i / 46 * Math.PI * 2 + rnd(-0.02, 0.02), r0 = 0.238, r1 = r0 + rnd(0.018, 0.07);
-  discSegs.add(P(r0, a), P(r1, a), pick(GOLD, HOT, AMBER), Math.random(), rnd(1.0, 2.0));
-}
-// a loose spiral trailing out of the iris, as in the close stills
-for (let i = 0; i < 90; i++) {
-  const t = i / 90, a = t * Math.PI * 3.3 + 0.6, r = 0.26 + t * 0.34;
-  const a2 = (i + 1) / 90 * Math.PI * 3.3 + 0.6, r2 = 0.26 + (i + 1) / 90 * 0.34;
-  discSegs.add(P(r, a), P(r2, a2), GOLD, 0.2 + t * 0.4, 1.6 - t * 0.7);
-}
-
-// -- radial spokes: the signature straight lines from the iris to the rim
-const SPOKES = 13;
-for (let s = 0; s < SPOKES; s++) {
-  const a = s / SPOKES * Math.PI * 2 + rnd(-0.06, 0.06);
-  const r0 = 0.28 + rnd(0, 0.05), r1 = rnd(0.90, 1.16);
-  const col = pick(GOLD, GOLD, AMBER, HOT), ph = Math.random();
-  const steps = 16;
-  for (let i = 0; i < steps; i++) {
-    const t0 = i / steps, t1 = (i + 1) / steps;
-    const ra = r0 + (r1 - r0) * t0, rb = r0 + (r1 - r0) * t1;
-    // a gentle sweep away from dead straight, and thinner the further out
-    const bend = 0.055 * Math.sin(t0 * 2.2);
-    discSegs.add(P(ra, a + bend), P(rb, a + 0.055 * Math.sin(t1 * 2.2)),
-                 col, ph + t0 * 0.1, 2.5 - t0 * 0.6);
-  }
-  // small nodes strung along the spoke, like junctions on a bus
-  for (let k = 0; k < 4; k++) {
-    const r = r0 + (r1 - r0) * rnd(0.15, 0.95), w = rnd(0.02, 0.06);
-    discSegs.add(P(r, a - w), P(r, a + w), HOT, Math.random(), rnd(2.6, 4.4));
+    const a0 = i / N * Math.PI * 2, a1 = (i + dash) / N * Math.PI * 2;
+    if (inGap(a0, gaps)) continue;
+    if (Math.random() > opts.fill) continue;
+    trackSegs.add(pt(r, a0, side), pt(r, a1, side), col, Math.random() * 0.4 + r * 0.3, width);
   }
 }
 
-// -- rim rings: the big ellipses bounding the disc
-function rimRing(r, width, density, col, jitter) {
-  const N = density;
-  for (let i = 0; i < N; i++) {
-    const a0 = i / N * Math.PI * 2, a1 = (i + rnd(0.3, 0.9)) / N * Math.PI * 2;
-    if (Math.random() < 0.10) continue;                       // broken, not solid
-    const rr = r + rnd(-jitter, jitter);
-    discSegs.add(P(rr, a0), P(rr, a1), col, Math.random(), width * rnd(0.6, 1.4));
-  }
-}
-rimRing(0.52, 2.4, 200, AMBER, 0.006);
-rimRing(0.98, 3.6, 420, HOT, 0.007);
-rimRing(1.03, 2.4, 320, GOLD, 0.013);
-for (let k = 0; k < 3; k++) {
-  const r = [0.62, 0.80, 1.05][k], a0 = rnd(0, 6.28), span = rnd(2.2, 4.2);
-  const col = [HOT, GOLD, AMBER][k], ph = Math.random(), N = 120;
-  for (let i = 0; i < N; i++) {
-    const t0 = i / N, t1 = (i + 0.9) / N;
-    const taper = Math.sin(Math.PI * t0);           // fades out at both ends
-    discSegs.add(P(r, a0 + span * t0), P(r, a0 + span * t1), col, ph + t0 * 0.2, 1.0 + taper * 3.4);
-  }
-}
-const discMesh = ribbonMesh(discSegs, { width: 1.7, bright: 1.45, flicker: 0.8 });
-disc.add(discMesh);
+// -- the tracks themselves
+const RADII = [];
+for (let i = 0; i < 34; i++) RADII.push(0.085 + Math.pow(i / 33, 1.08) * 0.925);
+const trackInfo = [];
+RADII.forEach((r, i) => {
+  const outer = r > 0.86;
+  const bold = Math.random() < 0.28 || outer;
+  const col = bold ? pick(GOLD, HOT) : pick(AMBER, AMBER, DEEP);
+  const info = {
+    r, col,
+    width: outer ? rnd(2.6, 3.8) : bold ? rnd(1.6, 2.6) : rnd(0.7, 1.3),
+    dash: bold ? rnd(0.75, 0.95) : rnd(0.25, 0.7),
+    fill: bold ? rnd(0.75, 0.95) : rnd(0.30, 0.7),
+    gaps: makeGaps(outer ? 2 : 1 + Math.floor(Math.random() * 3), outer),
+    density: rnd(0.8, 1.3),
+  };
+  trackInfo.push(info);
+  track(r, 1, info);
+  // the far hemisphere carries a sparser copy, which gives depth on rotation
+  if (Math.random() < 0.7) track(r, -1, { ...info, fill: info.fill * 0.45, width: info.width * 0.7, col: DEEP, gaps: makeGaps(3) });
+});
 
-// ══════════════════════════════════════════════════════════════════════
-// 2. The shell: meridian ridges converging on the disc's poles, carrying
-//    dense clusters of tiny blocks — the "circuit city" texture.
-// ══════════════════════════════════════════════════════════════════════
-const shellSegs = new Segs();
-const onSphere = (lat, lon, r = R) =>
-  new V3(Math.cos(lat) * Math.cos(lon) * r, Math.sin(lat) * r, Math.cos(lat) * Math.sin(lon) * r);
-
-// meridian ridges: broken dashed lines running pole to pole
-for (let m = 0; m < 74; m++) {
-  const lon = m / 74 * Math.PI * 2 + rnd(-0.02, 0.02);
-  const col = pick(AMBER, AMBER, GOLD, DEEP), ph = Math.random();
-  const N = 54;
-  for (let i = 0; i < N; i++) {
-    if (Math.random() < 0.42) continue;                        // dashed, uneven
-    const l0 = -Math.PI / 2 + i / N * Math.PI, l1 = -Math.PI / 2 + (i + rnd(0.4, 1.0)) / N * Math.PI;
-    const rr = R * rnd(0.985, 1.015);
-    shellSegs.add(onSphere(l0, lon, rr), onSphere(l1, lon, rr), col, ph + i * 0.01, rnd(0.7, 1.5));
-  }
-}
-// latitude fragments crossing them, so the shell reads as a grid in patches
-for (let k = 0; k < 340; k++) {
-  const lat = Math.asin(rnd(-1, 1)), lon = rnd(0, Math.PI * 2);
-  const span = rnd(0.05, 0.30) / Math.max(0.25, Math.cos(lat));
-  const col = pick(AMBER, GOLD, DEEP), ph = Math.random(), rr = R * rnd(0.99, 1.01);
-  const steps = 5;
-  for (let i = 0; i < steps; i++) {
-    const a0 = lon + span * i / steps, a1 = lon + span * (i + 1) / steps;
-    shellSegs.add(onSphere(lat, a0, rr), onSphere(lat, a1, rr), col, ph, rnd(0.7, 1.3));
-  }
-}
-
-// city blocks: patches of small rectangles lying flat on the surface
-function tangentBasis(n) {
-  const a = Math.abs(n.y) < 0.9 ? new V3(0, 1, 0) : new V3(1, 0, 0);
-  const u = a.clone().cross(n).normalize();
-  return [u, n.clone().cross(u)];
-}
-for (let c = 0; c < 58; c++) {
-  const lat = Math.asin(rnd(-1, 1)), lon = rnd(0, Math.PI * 2);
-  const centre = onSphere(lat, lon, R), n = centre.clone().normalize();
-  const [u, v] = tangentBasis(n);
-  const patch = rnd(0.10, 0.26), blocks = 8 + Math.floor(Math.random() * 20);
-  const hot = Math.random() < 0.3;
+// -- circuit detail riding on the tracks: small blocks and ladder rungs
+//    between neighbouring rings.  This is the fine texture in the reference.
+for (let i = 1; i < RADII.length; i++) {
+  const rIn = RADII[i - 1], rOut = RADII[i], gap = rOut - rIn;
+  const info = trackInfo[i];
+  // a band is either busy or nearly empty — that contrast is what makes it
+  // read as data rather than as a uniform mesh
+  const busy = Math.random() < 0.55;
+  const blocks = busy ? 10 + Math.floor(Math.random() * 26) : Math.floor(Math.random() * 5);
   for (let b = 0; b < blocks; b++) {
-    const cu = rnd(-patch, patch), cv = rnd(-patch, patch);
-    const w = rnd(0.008, 0.045), h = rnd(0.006, 0.030);
-    const lift = R * rnd(1.0, 1.035);
-    const col = hot ? pick(HOT, GOLD) : pick(GOLD, AMBER, DEEP), ph = Math.random();
-    const pt = (du, dv) => centre.clone().add(u.clone().multiplyScalar(cu + du))
-      .add(v.clone().multiplyScalar(cv + dv)).normalize().multiplyScalar(lift);
-    const c00 = pt(-w, -h), c10 = pt(w, -h), c11 = pt(w, h), c01 = pt(-w, h);
-    shellSegs.add(c00, c10, col, ph, 1.0); shellSegs.add(c10, c11, col, ph, 1.0);
-    shellSegs.add(c11, c01, col, ph, 1.0); shellSegs.add(c01, c00, col, ph, 1.0);
-    if (Math.random() < 0.45) {                                 // some are filled with hatching
+    const a = rnd(0, Math.PI * 2);
+    if (inGap(a, info.gaps)) continue;
+    const aw = rnd(0.015, 0.09) / Math.max(0.25, rOut), side = 1;
+    const r0 = rIn + gap * rnd(0.12, 0.35), r1 = rIn + gap * rnd(0.6, 0.92);
+    const col = Math.random() < 0.25 ? HOT : pick(GOLD, AMBER, DEEP), ph = Math.random();
+    const w = rnd(0.7, 1.3);
+    const c00 = pt(r0, a - aw, side), c10 = pt(r0, a + aw, side);
+    const c11 = pt(r1, a + aw, side), c01 = pt(r1, a - aw, side);
+    trackSegs.add(c00, c10, col, ph, w); trackSegs.add(c10, c11, col, ph, w);
+    trackSegs.add(c11, c01, col, ph, w); trackSegs.add(c01, c00, col, ph, w);
+    if (Math.random() < 0.4) {                       // hatching inside the block
       for (let f = 1; f < 3; f++) {
-        const t = -h + (2 * h) * f / 3;
-        shellSegs.add(pt(-w, t), pt(w, t), col, ph, 0.8);
+        const rr = r0 + (r1 - r0) * f / 3;
+        trackSegs.add(pt(rr, a - aw, side), pt(rr, a + aw, side), col, ph, 0.6);
       }
     }
   }
+  // rungs: tiny radial ticks crossing the band
+  const rungs = busy ? 30 + Math.floor(Math.random() * 60) : 8;
+  for (let k = 0; k < rungs; k++) {
+    const a = rnd(0, Math.PI * 2);
+    if (inGap(a, info.gaps)) continue;
+    trackSegs.add(pt(rIn + gap * rnd(0, 0.3), a, 1), pt(rIn + gap * rnd(0.6, 1.0), a, 1),
+                  pick(AMBER, DEEP, GOLD), Math.random(), rnd(0.5, 1.0));
+  }
 }
-// antennae: short spikes standing off the surface
-for (let i = 0; i < 130; i++) {
-  const lat = Math.asin(rnd(-1, 1)), lon = rnd(0, Math.PI * 2);
-  const a = onSphere(lat, lon, R * rnd(0.99, 1.01));
-  const b = a.clone().normalize().multiplyScalar(a.length() + rnd(0.015, 0.07));
-  shellSegs.add(a, b, pick(GOLD, AMBER, DEEP), Math.random(), rnd(0.7, 1.3));
+
+// -- radial spokes: only a handful, and they wander like cracks rather than
+//    ruling straight out.  Brightest near the iris, gone by the rim.
+const SPOKES = 7;
+for (let s2 = 0; s2 < SPOKES; s2++) {
+  const a0 = s2 / SPOKES * Math.PI * 2 + rnd(-0.25, 0.25);
+  const rEnd = rnd(0.62, 1.02), col = pick(GOLD, HOT, GOLD), ph = Math.random();
+  const N = 40; let a = a0;
+  for (let i = 0; i < N; i++) {
+    const t0 = i / N, t1 = (i + 1) / N;
+    const r0 = 0.27 + (rEnd - 0.27) * t0, r1 = 0.27 + (rEnd - 0.27) * t1;
+    const a2 = a + rnd(-0.012, 0.012) + 0.02 * Math.sin(t0 * 6);
+    if (Math.random() < 0.05) { a = a2; continue; }         // broken here and there
+    trackSegs.add(pt(r0, a, 1), pt(r1, a2, 1), col, ph + t0 * 0.15, (1 - t0 * 0.65) * 3.2 + 0.4);
+    a = a2;
+  }
 }
-const shellMesh = ribbonMesh(shellSegs, { width: 1.4, bright: 1.15, flicker: 1.0 });
-shell.add(shellMesh);
+
+// -- the iris: tightly packed rings around a dark pupil, at the near pole.
+//    The dark centre is what makes it read as an aperture.
+const PUPIL = 0.072;
+[[0.082, 2.6, HOT], [0.098, 1.6, GOLD], [0.112, 3.4, HOT], [0.129, 1.8, HOT],
+ [0.145, 4.0, GOLD], [0.163, 1.7, HOT], [0.181, 3.0, GOLD], [0.201, 2.0, HOT],
+ [0.221, 1.5, AMBER], [0.238, 2.6, GOLD]
+].forEach(([r, w, col], i) => {
+  const gaps = i % 3 === 0 ? makeGaps(1) : [];
+  const N = 170;
+  for (let k = 0; k < N; k++) {
+    const a0 = k / N * Math.PI * 2, a1 = (k + 0.9) / N * Math.PI * 2;
+    if (inGap(a0, gaps)) continue;
+    trackSegs.add(pt(r, a0, 1), pt(r, a1, 1), col, Math.random() * 0.2, w);
+  }
+});
+// a soft halo just outside the iris, which is what bleeds in the reference
+for (let i = 0; i < 300; i++) {
+  const a = rnd(0, Math.PI * 2), r0 = rnd(0.245, 0.27), r1 = r0 + rnd(0.006, 0.06);
+  trackSegs.add(pt(r0, a, 1), pt(r1, a, 1), pick(HOT, GOLD), Math.random(), rnd(0.8, 2.4));
+}
+
+const trackMesh = ribbonMesh(trackSegs, { width: 1.5, bright: 1.35, flicker: 0.9 });
+disc.add(trackMesh);
+
+// -- bright junction nodes: a few points flare with a small starburst
+const nodeSegs = new Segs();
+const NODES = 7;
+for (let i = 0; i < NODES; i++) {
+  const r = rnd(0.30, 0.95), a = rnd(0, Math.PI * 2), c = pt(r, a, 1);
+  const [nu, nv] = (() => {
+    const n = c.clone().normalize();
+    const t = Math.abs(n.z) < 0.9 ? new V3(0, 0, 1) : new V3(1, 0, 0);
+    const u = t.clone().cross(n).normalize();
+    return [u, n.clone().cross(u)];
+  })();
+  const ph = Math.random();
+  for (let k = 0; k < 9; k++) {
+    const ang = k / 9 * Math.PI * 2 + rnd(-0.1, 0.1), len = rnd(0.02, 0.09);
+    const d = nu.clone().multiplyScalar(Math.cos(ang) * len).add(nv.clone().multiplyScalar(Math.sin(ang) * len));
+    nodeSegs.add(c, c.clone().add(d), HOT, ph, rnd(1.0, 2.4));
+  }
+}
+const nodeMesh = ribbonMesh(nodeSegs, { width: 1.6, bright: 1.6, flicker: 1.8 });
+disc.add(nodeMesh);
 
 // ══════════════════════════════════════════════════════════════════════
 // 3. Sparks: fine dashes drifting through the volume and off the top edge,
@@ -356,23 +360,24 @@ for (let i = 0; i < 900; i++) {
 const sparks = ribbonMesh(sparkSegs, { width: 1.25, driftAmt: 0.55, bright: 1.05, flicker: 2.6 });
 orb.add(sparks);
 
-// long trailing arcs that curve away from the top, drawn as tapering streaks
+// trailing streaks that peel off the rim, tapering as they go
 const arcSegs = new Segs();
-for (let i = 0; i < 26; i++) {
-  const lon = rnd(0, Math.PI * 2), lat0 = rnd(0.1, 1.2), span = rnd(0.5, 1.5);
-  const col = pick(GOLD, HOT), ph = Math.random(), N = 26;
+for (let i = 0; i < 22; i++) {
+  const a0 = rnd(0, Math.PI * 2), spin = Math.random() < 0.5 ? 1 : -1;
+  const sweep = spin * rnd(0.5, 1.4), reach = rnd(0.05, 0.30);
+  const col = pick(GOLD, HOT), ph = Math.random(), N = 24;
   let prev = null;
   for (let k = 0; k <= N; k++) {
     const t = k / N;
-    const lat = lat0 + span * t, lonk = lon + t * rnd(0.3, 1.0) * 0.6;
-    const r = R * (1.0 + t * rnd(0.10, 0.45));
-    const p = onSphere(Math.min(lat, 1.52), lonk, r);
-    if (prev) arcSegs.add(prev, p, col, ph + t * 0.3, (1 - t) * 1.8 + 0.3);
+    const a = a0 + sweep * t;
+    const r = 0.97 + t * reach;
+    const p = pt(Math.min(r, 1.0), a, 1).setLength(1 + Math.max(0, r - 1) + t * 0.08);
+    if (prev) arcSegs.add(prev, p, col, ph + t * 0.3, (1 - t) * 2.2 + 0.2);
     prev = p;
   }
 }
 const arcs = ribbonMesh(arcSegs, { width: 1.5, bright: 1.15, flicker: 1.4 });
-shell.add(arcs);
+disc.add(arcs);
 
 // ══════════════════════════════════════════════════════════════════════
 // 4. Bokeh: defocused points of light. In the stills these soft dots are a
@@ -483,17 +488,16 @@ function frame() {
 
   // The orb drifts rather than spinning on a fixed axis — in the footage it
   // never completes a revolution, it lolls.
-  orb.rotation.y = Math.sin(t * 0.13) * 0.30 + t * 0.035 * spin;
-  orb.rotation.x = Math.sin(t * 0.29) * 0.10;
+  orb.rotation.y = Math.sin(t * 0.13) * 0.26 + Math.sin(t * 0.047) * 0.14;
+  orb.rotation.x = Math.sin(t * 0.29) * 0.09 + Math.sin(t * 0.07) * 0.06;
   orb.rotation.z = Math.cos(t * 0.21) * 0.04;
   orb.scale.setScalar(1 + Math.sin(t * 0.9) * 0.010 + level * 0.05 + onset * 0.025);
   camera.position.set(Math.sin(t * 0.17) * 0.10, Math.sin(t * 0.11) * 0.04, 4.2 - Math.sin(t * 0.07) * 0.2);
   camera.lookAt(0, 0, 0);
 
   // disc and shell counter-rotate about the shared axis
-  disc.rotation.y += dt * 0.10 * spin * (1 + level * 2.0);
-  shell.rotation.y -= dt * 0.045 * spin * (1 + level * 1.2);
-  discMesh.rotation.y = 0;
+  disc.rotation.z += dt * 0.045 * spin * (1 + level * 2.0);
+  shell.rotation.z -= dt * 0.02 * spin * (1 + level * 1.2);
 
   ribbonMats.forEach(({ m, flicker0 }) => {
     const u = m.uniforms;
