@@ -8,13 +8,13 @@
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; overflow: hidden; }
-  /* Stand-in for whatever is behind the orb. The orb canvas is composited with
-     mix-blend-mode: screen, so its black becomes see-through and only the glow
-     is added on top of this, like the hologram in the reference footage. */
+  /* Stand-in for whatever sits behind the orb. The canvas is composited with
+     mix-blend-mode: screen, so its black is see-through and only the glow is
+     added on top — the hologram reads as transparent, as in the references. */
   body {
     background:
-      radial-gradient(ellipse at 30% 20%, rgba(40,70,120,0.35), transparent 55%),
-      radial-gradient(ellipse at 80% 80%, rgba(20,30,60,0.5), transparent 60%),
+      radial-gradient(ellipse at 28% 18%, rgba(40,70,120,0.30), transparent 55%),
+      radial-gradient(ellipse at 80% 82%, rgba(20,30,60,0.45), transparent 60%),
       linear-gradient(160deg, #0a0f1a 0%, #06090f 100%);
     font-family: 'Share Tech Mono', monospace;
   }
@@ -26,7 +26,7 @@
     font-family: inherit; font-size: 12px; letter-spacing: 2px; padding: 8px 14px; cursor: pointer;
   }
   #controls button.on { background: rgba(255,150,30,0.28); color: #fff3d6; }
-  #hint { position: fixed; left: 24px; top: 20px; color: rgba(255,180,90,0.55); font-size: 11px; letter-spacing: 2px; z-index: 5; }
+  #hint { position: fixed; left: 24px; top: 20px; color: rgba(255,180,90,0.5); font-size: 11px; letter-spacing: 2px; z-index: 5; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -36,7 +36,7 @@
 </script>
 </head>
 <body>
-<div id="hint">ORB PREVIEW  -  SPEAKING replays the loudness of the reference line; MIC reacts to your voice</div>
+<div id="hint">ORB PREVIEW  -  SPEAKING replays the reference line; MIC reacts to your voice</div>
 <div id="stage"></div>
 <div id="controls">
   <button data-state="idle" class="on">IDLE</button>
@@ -53,19 +53,22 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 
 // Loudness of the reference line ("Yes. If you will just allow me to contact
-// Mr. Stark.", 2:02-2:06.5 in the video), 30 samples a second, 0..1. Speaking
-// replays it so the orb moves to the same rhythm of words and pauses.
+// Mr. Stark."), 30 samples a second, 0..1 — SPEAKING replays it so the orb
+// moves to the same rhythm of words and pauses.
 const LINE_ENV = [0.715, 0.79, 0.763, 0.777, 0.777, 0.744, 0.701, 0.617, 0.506, 0.44, 0.364, 0.27, 0.221, 0.195, 0.182, 0.178, 0.174, 0.168, 0.162, 0.158, 0.158, 0.16, 0.158, 0.153, 0.146, 0.145, 0.152, 0.152, 0.149, 0.339, 0.598, 0.762, 0.808, 0.796, 0.777, 0.757, 0.735, 0.677, 0.547, 0.425, 0.383, 0.337, 0.26, 0.192, 0.155, 0.136, 0.129, 0.15, 0.316, 0.501, 0.535, 0.423, 0.321, 0.297, 0.44, 0.638, 0.701, 0.742, 0.839, 0.824, 0.677, 0.521, 0.451, 0.466, 0.664, 0.893, 0.874, 0.673, 0.622, 0.643, 0.586, 0.643, 0.697, 0.611, 0.575, 0.731, 0.911, 0.992, 1.0, 0.997, 0.859, 0.763, 0.769, 0.732, 0.615, 0.541, 0.533, 0.435, 0.474, 0.63, 0.638, 0.715, 0.84, 0.783, 0.648, 0.554, 0.498, 0.576, 0.665, 0.598, 0.423, 0.324, 0.412, 0.556, 0.594, 0.546, 0.566, 0.61, 0.543, 0.423, 0.432, 0.516, 0.611, 0.725, 0.805, 0.781, 0.703, 0.754, 0.911, 1.0, 1.0, 0.952, 0.956, 1.0, 0.994, 0.97, 0.928, 0.83, 0.66, 0.516, 0.548, 0.623, 0.709, 0.797, 0.728];
 
-// ── palette: amber / gold / hot yellow, as in the footage ──
-const AMBER = new THREE.Color(1.0, 0.36, 0.01);
-const GOLD  = new THREE.Color(1.0, 0.58, 0.06);
-const HOT   = new THREE.Color(1.0, 0.78, 0.30);
+// ── palette ──────────────────────────────────────────────────────────
+// The hologram is a saturated orange; only the iris core and the densest
+// data clusters go yellow-white. Keeping the mass orange is what stops it
+// reading as a generic glowing ball.
+const DEEP  = new THREE.Color(1.00, 0.28, 0.00);
+const AMBER = new THREE.Color(1.00, 0.42, 0.02);
+const GOLD  = new THREE.Color(1.00, 0.62, 0.08);
+const HOT   = new THREE.Color(1.00, 0.82, 0.34);
 const rnd = (a = 0, b = 1) => a + Math.random() * (b - a);
 const pick = (...c) => c[Math.floor(Math.random() * c.length)];
 const V3 = THREE.Vector3;
 
-// ── renderer: black clear + CSS screen blending = transparent background ──
 const stage = document.getElementById('stage');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
@@ -74,230 +77,368 @@ renderer.setClearColor(0x000000, 1);
 stage.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 50);
-camera.position.set(0, 0, 4.3);
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 50);
+camera.position.set(0, 0, 4.2);
 
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
-const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.4, 0.45, 0.4);
+const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.5, 0.6, 0.25);
 composer.addPass(bloom);
 
 const orb = new THREE.Group();
-orb.scale.y = 0.95;                 // the hologram is a touch squashed, not a perfect ball
 scene.add(orb);
 const R = 1.0;
 
-// ══════════════════════════════════════════════════════════════════
-// Fragment ribbons: every glowing line in the orb (shell traces, the
-// nucleus, the drifting spark dashes) is a thin camera-facing quad drawn by
-// one shader; plain GL lines are 1 px wire and never look like light.
-// ══════════════════════════════════════════════════════════════════
-function tangentBasis(n) {
-  const a = Math.abs(n.y) < 0.9 ? new V3(0, 1, 0) : new V3(1, 0, 0);
-  const u = a.clone().cross(n).normalize();
-  const v = n.clone().cross(u);
-  return [u, v];
-}
+// The whole thing is organised around one axis: a flat "equatorial" disc
+// carrying the iris and the radial spokes, and a spherical shell of circuit
+// detail whose meridians converge on that axis' poles. In the references the
+// disc is seen nearly face-on, tilted a little.
+const AXIS_TILT_X = -1.24, AXIS_TILT_Z = 0.15;
+const disc = new THREE.Group(); disc.rotation.set(AXIS_TILT_X, 0, AXIS_TILT_Z); orb.add(disc);
+const shell = new THREE.Group(); shell.rotation.set(AXIS_TILT_X, 0, AXIS_TILT_Z); orb.add(shell);
+
+// ══════════════════════════════════════════════════════════════════════
+// Ribbon shader. Every glowing line — circuit traces, spokes, iris rings,
+// sparks — is a camera-facing quad a few pixels wide. Plain GL lines are
+// locked to 1px and read as wire, never as light.
+// ══════════════════════════════════════════════════════════════════════
 class Segs {
-  constructor() { this.p = []; this.c = []; this.ph = []; }
-  add(a, b, col, ph) { this.p.push(a.x, a.y, a.z, b.x, b.y, b.z); this.c.push(col.r, col.g, col.b); this.ph.push(ph); }
+  constructor() { this.p = []; this.c = []; this.ph = []; this.w = []; }
+  add(a, b, col, ph, w = 1) {
+    this.p.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    this.c.push(col.r, col.g, col.b); this.ph.push(ph); this.w.push(w);
+  }
   get n() { return this.ph.length; }
 }
-const wobble = d => 1 + 0.05 * Math.sin(d.x * 3.1 + d.y * 1.7) + 0.04 * Math.sin(d.z * 4.3 - d.x * 2.0);   // lumpy silhouette
 
 const RIBBON_VERT = `
-  attribute vec2 corner; attribute vec3 aA, aB, aColor; attribute float aPhase;
-  uniform float uTime, uLevel, uPulse, uExpand, uFlicker, uWidth, uDriftAmt, uBright; uniform vec3 uDrift; uniform vec2 uRes;
+  attribute vec2 corner; attribute vec3 aA, aB, aColor; attribute float aPhase, aWidth;
+  uniform float uTime, uLevel, uPulse, uExpand, uFlicker, uWidth, uBright, uDriftAmt, uSpin;
+  uniform vec3 uDrift; uniform vec2 uRes;
   varying vec3 vC; varying float vA, vSide;
   void main(){
-    float f = sin(uTime * (1.2 + aPhase * 3.5) * uFlicker + aPhase * 50.0);
+    // Each fragment has its own flicker phase, so the surface crawls with
+    // light rather than pulsing as one body.
+    float f = sin(uTime * (1.1 + aPhase * 3.2) * uFlicker + aPhase * 50.0);
     float pulse = 0.5 + 0.5 * f;
-    float alpha = mix(0.08, 0.95, pow(pulse, mix(3.0, 1.6, uLevel)));
-    // dashes stream along uDrift and fade in and out over their life
-    float k = fract(uTime * 0.12 * (0.6 + aPhase) + aPhase * 13.0);
+    float alpha = mix(0.16, 1.0, pow(pulse, mix(2.4, 1.3, uLevel)));
+
+    // Sparks stream along uDrift and fade in and out across their life.
+    float k = fract(uTime * 0.11 * (0.5 + aPhase) + aPhase * 13.0);
     vec3 shift = uDrift * uDriftAmt * k;
     if (uDriftAmt > 0.0) alpha *= sin(3.14159 * k);
-    float jit = 0.5 + 0.5 * sin(aPhase * 90.0 + uTime * 9.0);
-    vec3 a = aA + shift + normalize(aA) * (uExpand + uPulse * 0.05) * jit;
-    vec3 b = aB + shift + normalize(aB) * (uExpand + uPulse * 0.05) * jit;
+
+    float jit = 0.5 + 0.5 * sin(aPhase * 90.0 + uTime * 8.0);
+    vec3 push = vec3(uExpand + uPulse * 0.04) * jit;
+    vec3 a = aA + shift + normalize(aA + 1e-5) * push;
+    vec3 b = aB + shift + normalize(aB + 1e-5) * push;
+
     vec4 ca = projectionMatrix * modelViewMatrix * vec4(a, 1.0);
     vec4 cb = projectionMatrix * modelViewMatrix * vec4(b, 1.0);
     vec2 sa = ca.xy / ca.w * uRes * 0.5, sb = cb.xy / cb.w * uRes * 0.5;
-    vec2 dir = sb - sa; float len = length(dir); dir = len > 1e-4 ? dir / len : vec2(1.0, 0.0);
+    vec2 dir = sb - sa; float len = length(dir);
+    dir = len > 1e-4 ? dir / len : vec2(1.0, 0.0);
     vec2 nrm = vec2(-dir.y, dir.x);
     vec4 c = mix(ca, cb, corner.x);
-    c.xy += nrm * corner.y * (uWidth * 0.5) / (uRes * 0.5) * c.w;
+    c.xy += nrm * corner.y * (uWidth * aWidth * 0.5) / (uRes * 0.5) * c.w;
     gl_Position = c;
     vC = aColor; vSide = corner.y;
-    vA = alpha * (0.85 + uLevel * 0.12) * (1.0 + uPulse * 0.32) * uBright;
+    vA = alpha * (0.85 + uLevel * 0.15) * (1.0 + uPulse * 0.30) * uBright;
   }`;
 const RIBBON_FRAG = `
   varying vec3 vC; varying float vA, vSide;
   void main(){
-    float edge = 1.0 - smoothstep(0.30, 1.0, abs(vSide));
+    float edge = 1.0 - smoothstep(0.25, 1.0, abs(vSide));
     float a = vA * edge;
-    vec3 col = vC + vec3(0.30, 0.20, 0.05) * (1.0 - abs(vSide));   // hot yellow core, orange edge
+    // hotter down the centre line of each ribbon, orange at its edges
+    vec3 col = vC + vec3(0.16, 0.09, 0.01) * pow(1.0 - abs(vSide), 2.5);
     gl_FragColor = vec4(col * a, a);
   }`;
+
 const ribbonMats = [];
-function ribbonMesh(segs, { width = 1.7, driftAmt = 0, bright = 1, flicker = 1 } = {}) {
+function ribbonMesh(segs, { width = 1.7, driftAmt = 0, bright = 1, flicker = 1, drift = null } = {}) {
   const n = segs.n, g = new THREE.InstancedBufferGeometry();
   g.setAttribute('corner', new THREE.Float32BufferAttribute([0, -1, 1, -1, 1, 1, 0, 1], 2));
   g.setIndex([0, 1, 2, 0, 2, 3]);
   const A = new Float32Array(n * 3), B = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) { A[i * 3 + k] = segs.p[i * 6 + k]; B[i * 3 + k] = segs.p[i * 6 + 3 + k]; }
+  for (let i = 0; i < n; i++) for (let k = 0; k < 3; k++) {
+    A[i * 3 + k] = segs.p[i * 6 + k]; B[i * 3 + k] = segs.p[i * 6 + 3 + k];
+  }
   g.setAttribute('aA', new THREE.InstancedBufferAttribute(A, 3));
   g.setAttribute('aB', new THREE.InstancedBufferAttribute(B, 3));
   g.setAttribute('aColor', new THREE.InstancedBufferAttribute(new Float32Array(segs.c), 3));
   g.setAttribute('aPhase', new THREE.InstancedBufferAttribute(new Float32Array(segs.ph), 1));
+  g.setAttribute('aWidth', new THREE.InstancedBufferAttribute(new Float32Array(segs.w), 1));
   g.instanceCount = n;
   const m = new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-    uniforms: { uTime: { value: 0 }, uLevel: { value: 0 }, uPulse: { value: 0 }, uExpand: { value: 0 }, uFlicker: { value: flicker },
-                uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: width }, uDriftAmt: { value: driftAmt },
-                uDrift: { value: new THREE.Vector3(-0.5, 0.7, 0.1) }, uBright: { value: bright } },
+    transparent: true, depthWrite: false, depthTest: false,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    uniforms: {
+      uTime: { value: 0 }, uLevel: { value: 0 }, uPulse: { value: 0 }, uExpand: { value: 0 },
+      uFlicker: { value: flicker }, uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: width },
+      uDriftAmt: { value: driftAmt }, uDrift: { value: drift || new THREE.Vector3(-0.35, 0.9, 0.1) },
+      uBright: { value: bright }, uSpin: { value: 0 },
+    },
     vertexShader: RIBBON_VERT, fragmentShader: RIBBON_FRAG,
   });
   ribbonMats.push({ m, flicker0: flicker });
   const mesh = new THREE.Mesh(g, m); mesh.frustumCulled = false; return mesh;
 }
 
-// ── 1. the shell: circuit-like traces (right-angle turns), some as parallel bundles ──
-const shellSegs = new Segs();
-function tracePath(radiusFactor) {
-  const n = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
-  const r = R * radiusFactor * wobble(n);
-  let p = n.clone().multiplyScalar(r), ang = Math.floor(Math.random() * 4) * Math.PI / 2 + rnd(-0.1, 0.1);
-  const pts = [{ p: p.clone(), d: null }], steps = 2 + Math.floor(Math.random() * 4);
-  for (let s = 0; s < steps; s++) {
-    const nn = p.clone().normalize(), [u, v] = tangentBasis(nn);
-    const d = u.clone().multiplyScalar(Math.cos(ang)).add(v.clone().multiplyScalar(Math.sin(ang)));
-    const q = p.clone().add(d.clone().multiplyScalar(R * rnd(0.04, 0.24))).normalize().multiplyScalar(r);
-    pts.push({ p: q, d }); p = q;
-    if (Math.random() < 0.65) ang += (Math.random() < 0.5 ? 1 : -1) * Math.PI / 2 + rnd(-0.08, 0.08);
+// ══════════════════════════════════════════════════════════════════════
+// 1. The disc: iris, radial spokes, rim rings.  In the stills this is the
+//    dominant read — an eye with straight spokes fanning out to a big ring.
+// ══════════════════════════════════════════════════════════════════════
+const IRIS_R = 0.17;
+const discSegs = new Segs();
+const P = (r, a) => new V3(Math.cos(a) * r, 0, Math.sin(a) * r);   // disc lies in XZ
+
+// -- iris: concentric broken rings around a dark pupil, plus fine tick marks
+function irisRing(r, width, gaps, col, bright) {
+  const N = 150;
+  for (let i = 0; i < N; i++) {
+    const a0 = i / N * Math.PI * 2, a1 = (i + 0.85) / N * Math.PI * 2;
+    // gaps: a few angular slices are missing, which is what makes it read
+    // as an aperture rather than a plain circle
+    let skip = false;
+    for (const [gs, ge] of gaps) if (a0 > gs && a0 < ge) skip = true;
+    if (skip) continue;
+    discSegs.add(P(r, a0), P(r, a1), col.clone().multiplyScalar(bright), Math.random() * 0.25, width);
   }
-  return pts;
 }
-function addTrace(radiusFactor, bundle) {
-  const pts = tracePath(radiusFactor), col = pick(AMBER, AMBER, GOLD, GOLD, HOT).clone().multiplyScalar(rnd(0.6, 1)), ph = Math.random();
-  const lanes = bundle ? 2 + Math.floor(Math.random() * 3) : 1, gap = 0.013;
-  for (let l = 0; l < lanes; l++) {
-    for (let i = 1; i < pts.length; i++) {
-      const a = pts[i - 1].p, b = pts[i].p, side = pts[i].d ? b.clone().normalize().cross(pts[i].d) : new V3();
-      const off = side.multiplyScalar(l * gap);
-      shellSegs.add(a.clone().add(off), b.clone().add(off), col, ph + l * 0.02);
+irisRing(0.090, 3.4, [[1.1, 1.5]], HOT, 1.0);
+irisRing(0.120, 2.6, [[3.4, 4.0], [0.2, 0.45]], HOT, 0.9);
+irisRing(0.152, 4.2, [[2.2, 2.9]], GOLD, 1.0);
+irisRing(0.188, 2.2, [[5.0, 5.6]], GOLD, 0.8);
+irisRing(0.228, 3.0, [[0.8, 1.3], [4.1, 4.5]], AMBER, 0.9);
+// aperture teeth: short radial ticks around the iris
+for (let i = 0; i < 46; i++) {
+  const a = i / 46 * Math.PI * 2 + rnd(-0.02, 0.02), r0 = 0.238, r1 = r0 + rnd(0.018, 0.07);
+  discSegs.add(P(r0, a), P(r1, a), pick(GOLD, HOT, AMBER), Math.random(), rnd(1.0, 2.0));
+}
+// a loose spiral trailing out of the iris, as in the close stills
+for (let i = 0; i < 90; i++) {
+  const t = i / 90, a = t * Math.PI * 3.3 + 0.6, r = 0.26 + t * 0.34;
+  const a2 = (i + 1) / 90 * Math.PI * 3.3 + 0.6, r2 = 0.26 + (i + 1) / 90 * 0.34;
+  discSegs.add(P(r, a), P(r2, a2), GOLD, 0.2 + t * 0.4, 1.6 - t * 0.7);
+}
+
+// -- radial spokes: the signature straight lines from the iris to the rim
+const SPOKES = 13;
+for (let s = 0; s < SPOKES; s++) {
+  const a = s / SPOKES * Math.PI * 2 + rnd(-0.06, 0.06);
+  const r0 = 0.28 + rnd(0, 0.05), r1 = rnd(0.90, 1.16);
+  const col = pick(GOLD, GOLD, AMBER, HOT), ph = Math.random();
+  const steps = 16;
+  for (let i = 0; i < steps; i++) {
+    const t0 = i / steps, t1 = (i + 1) / steps;
+    const ra = r0 + (r1 - r0) * t0, rb = r0 + (r1 - r0) * t1;
+    // a gentle sweep away from dead straight, and thinner the further out
+    const bend = 0.055 * Math.sin(t0 * 2.2);
+    discSegs.add(P(ra, a + bend), P(rb, a + 0.055 * Math.sin(t1 * 2.2)),
+                 col, ph + t0 * 0.1, 2.5 - t0 * 0.6);
+  }
+  // small nodes strung along the spoke, like junctions on a bus
+  for (let k = 0; k < 4; k++) {
+    const r = r0 + (r1 - r0) * rnd(0.15, 0.95), w = rnd(0.02, 0.06);
+    discSegs.add(P(r, a - w), P(r, a + w), HOT, Math.random(), rnd(2.6, 4.4));
+  }
+}
+
+// -- rim rings: the big ellipses bounding the disc
+function rimRing(r, width, density, col, jitter) {
+  const N = density;
+  for (let i = 0; i < N; i++) {
+    const a0 = i / N * Math.PI * 2, a1 = (i + rnd(0.3, 0.9)) / N * Math.PI * 2;
+    if (Math.random() < 0.10) continue;                       // broken, not solid
+    const rr = r + rnd(-jitter, jitter);
+    discSegs.add(P(rr, a0), P(rr, a1), col, Math.random(), width * rnd(0.6, 1.4));
+  }
+}
+rimRing(0.52, 2.4, 200, AMBER, 0.006);
+rimRing(0.98, 3.6, 420, HOT, 0.007);
+rimRing(1.03, 2.4, 320, GOLD, 0.013);
+for (let k = 0; k < 3; k++) {
+  const r = [0.62, 0.80, 1.05][k], a0 = rnd(0, 6.28), span = rnd(2.2, 4.2);
+  const col = [HOT, GOLD, AMBER][k], ph = Math.random(), N = 120;
+  for (let i = 0; i < N; i++) {
+    const t0 = i / N, t1 = (i + 0.9) / N;
+    const taper = Math.sin(Math.PI * t0);           // fades out at both ends
+    discSegs.add(P(r, a0 + span * t0), P(r, a0 + span * t1), col, ph + t0 * 0.2, 1.0 + taper * 3.4);
+  }
+}
+const discMesh = ribbonMesh(discSegs, { width: 1.7, bright: 1.45, flicker: 0.8 });
+disc.add(discMesh);
+
+// ══════════════════════════════════════════════════════════════════════
+// 2. The shell: meridian ridges converging on the disc's poles, carrying
+//    dense clusters of tiny blocks — the "circuit city" texture.
+// ══════════════════════════════════════════════════════════════════════
+const shellSegs = new Segs();
+const onSphere = (lat, lon, r = R) =>
+  new V3(Math.cos(lat) * Math.cos(lon) * r, Math.sin(lat) * r, Math.cos(lat) * Math.sin(lon) * r);
+
+// meridian ridges: broken dashed lines running pole to pole
+for (let m = 0; m < 74; m++) {
+  const lon = m / 74 * Math.PI * 2 + rnd(-0.02, 0.02);
+  const col = pick(AMBER, AMBER, GOLD, DEEP), ph = Math.random();
+  const N = 54;
+  for (let i = 0; i < N; i++) {
+    if (Math.random() < 0.42) continue;                        // dashed, uneven
+    const l0 = -Math.PI / 2 + i / N * Math.PI, l1 = -Math.PI / 2 + (i + rnd(0.4, 1.0)) / N * Math.PI;
+    const rr = R * rnd(0.985, 1.015);
+    shellSegs.add(onSphere(l0, lon, rr), onSphere(l1, lon, rr), col, ph + i * 0.01, rnd(0.7, 1.5));
+  }
+}
+// latitude fragments crossing them, so the shell reads as a grid in patches
+for (let k = 0; k < 340; k++) {
+  const lat = Math.asin(rnd(-1, 1)), lon = rnd(0, Math.PI * 2);
+  const span = rnd(0.05, 0.30) / Math.max(0.25, Math.cos(lat));
+  const col = pick(AMBER, GOLD, DEEP), ph = Math.random(), rr = R * rnd(0.99, 1.01);
+  const steps = 5;
+  for (let i = 0; i < steps; i++) {
+    const a0 = lon + span * i / steps, a1 = lon + span * (i + 1) / steps;
+    shellSegs.add(onSphere(lat, a0, rr), onSphere(lat, a1, rr), col, ph, rnd(0.7, 1.3));
+  }
+}
+
+// city blocks: patches of small rectangles lying flat on the surface
+function tangentBasis(n) {
+  const a = Math.abs(n.y) < 0.9 ? new V3(0, 1, 0) : new V3(1, 0, 0);
+  const u = a.clone().cross(n).normalize();
+  return [u, n.clone().cross(u)];
+}
+for (let c = 0; c < 58; c++) {
+  const lat = Math.asin(rnd(-1, 1)), lon = rnd(0, Math.PI * 2);
+  const centre = onSphere(lat, lon, R), n = centre.clone().normalize();
+  const [u, v] = tangentBasis(n);
+  const patch = rnd(0.10, 0.26), blocks = 8 + Math.floor(Math.random() * 20);
+  const hot = Math.random() < 0.3;
+  for (let b = 0; b < blocks; b++) {
+    const cu = rnd(-patch, patch), cv = rnd(-patch, patch);
+    const w = rnd(0.008, 0.045), h = rnd(0.006, 0.030);
+    const lift = R * rnd(1.0, 1.035);
+    const col = hot ? pick(HOT, GOLD) : pick(GOLD, AMBER, DEEP), ph = Math.random();
+    const pt = (du, dv) => centre.clone().add(u.clone().multiplyScalar(cu + du))
+      .add(v.clone().multiplyScalar(cv + dv)).normalize().multiplyScalar(lift);
+    const c00 = pt(-w, -h), c10 = pt(w, -h), c11 = pt(w, h), c01 = pt(-w, h);
+    shellSegs.add(c00, c10, col, ph, 1.0); shellSegs.add(c10, c11, col, ph, 1.0);
+    shellSegs.add(c11, c01, col, ph, 1.0); shellSegs.add(c01, c00, col, ph, 1.0);
+    if (Math.random() < 0.45) {                                 // some are filled with hatching
+      for (let f = 1; f < 3; f++) {
+        const t = -h + (2 * h) * f / 3;
+        shellSegs.add(pt(-w, t), pt(w, t), col, ph, 0.8);
+      }
     }
   }
 }
-function sweepArc() {
-  const n = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize(), [u, v] = tangentBasis(n);
-  const a0 = rnd(0, 6.28), span = rnd(0.5, 1.9), tilt = rnd(-0.6, 0.6), r = R * rnd(0.94, 1.06);
-  const col = pick(GOLD, AMBER, HOT).clone().multiplyScalar(rnd(0.6, 1)), ph = Math.random();
+// antennae: short spikes standing off the surface
+for (let i = 0; i < 130; i++) {
+  const lat = Math.asin(rnd(-1, 1)), lon = rnd(0, Math.PI * 2);
+  const a = onSphere(lat, lon, R * rnd(0.99, 1.01));
+  const b = a.clone().normalize().multiplyScalar(a.length() + rnd(0.015, 0.07));
+  shellSegs.add(a, b, pick(GOLD, AMBER, DEEP), Math.random(), rnd(0.7, 1.3));
+}
+const shellMesh = ribbonMesh(shellSegs, { width: 1.4, bright: 1.15, flicker: 1.0 });
+shell.add(shellMesh);
+
+// ══════════════════════════════════════════════════════════════════════
+// 3. Sparks: fine dashes drifting through the volume and off the top edge,
+//    the motion-blurred trails seen all over the reference frames.
+// ══════════════════════════════════════════════════════════════════════
+const sparkSegs = new Segs();
+for (let i = 0; i < 900; i++) {
+  const d = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
+  const a = d.multiplyScalar(R * (0.55 + Math.cbrt(Math.random()) * 0.55));
+  const dir = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize().multiplyScalar(rnd(0.015, 0.06));
+  sparkSegs.add(a, a.clone().add(dir), pick(GOLD, HOT, AMBER, GOLD), Math.random(), rnd(0.6, 1.2));
+}
+const sparks = ribbonMesh(sparkSegs, { width: 1.25, driftAmt: 0.55, bright: 1.05, flicker: 2.6 });
+orb.add(sparks);
+
+// long trailing arcs that curve away from the top, drawn as tapering streaks
+const arcSegs = new Segs();
+for (let i = 0; i < 26; i++) {
+  const lon = rnd(0, Math.PI * 2), lat0 = rnd(0.1, 1.2), span = rnd(0.5, 1.5);
+  const col = pick(GOLD, HOT), ph = Math.random(), N = 26;
   let prev = null;
-  for (let i = 0; i <= 26; i++) {
-    const a = a0 + span * i / 26, c = u.clone().multiplyScalar(Math.cos(a)).add(v.clone().multiplyScalar(Math.sin(a)));
-    const q = c.add(n.clone().multiplyScalar(tilt * Math.sin(a * 2))).normalize().multiplyScalar(r);
-    if (prev) shellSegs.add(prev, q, col, ph); prev = q;
+  for (let k = 0; k <= N; k++) {
+    const t = k / N;
+    const lat = lat0 + span * t, lonk = lon + t * rnd(0.3, 1.0) * 0.6;
+    const r = R * (1.0 + t * rnd(0.10, 0.45));
+    const p = onSphere(Math.min(lat, 1.52), lonk, r);
+    if (prev) arcSegs.add(prev, p, col, ph + t * 0.3, (1 - t) * 1.8 + 0.3);
+    prev = p;
   }
 }
-for (let i = 0; i < 850; i++) addTrace(Math.random() < 0.15 ? rnd(0.35, 0.8) : 1 - Math.pow(Math.random(), 2.2) * 0.2, false);
-for (let i = 0; i < 170; i++) addTrace(1 - Math.pow(Math.random(), 2.2) * 0.16, true);
-for (let i = 0; i < 40; i++) sweepArc();
-for (let i = 0; i < 220; i++) addTrace(rnd(1.03, 1.26), false);        // fragments lifted off the surface
-const shell = ribbonMesh(shellSegs, { width: 1.6 });
-orb.add(shell);
+const arcs = ribbonMesh(arcSegs, { width: 1.5, bright: 1.15, flicker: 1.4 });
+shell.add(arcs);
 
-// ── 2. spark dashes: tiny bright dashes throughout the volume, all drifting the same way ──
-const dashSegs = new Segs();
-for (let i = 0; i < 1300; i++) {
-  const d = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize(), r = R * Math.cbrt(Math.random()) * 1.05;
-  const a = d.multiplyScalar(r), dir = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize().multiplyScalar(rnd(0.012, 0.05));
-  dashSegs.add(a, a.clone().add(dir), pick(GOLD, HOT, AMBER, GOLD), Math.random());
-}
-const dashes = ribbonMesh(dashSegs, { width: 1.3, driftAmt: 0.5, bright: 0.9, flicker: 2.5 });
-orb.add(dashes);
-
-// ══════════════════════════════════════════════════════════════════
-// 3. Rings: thick translucent bands with bright rims (flat annuli), some open
-//    like a C, at different tilts, plus thin arcs sweeping outside.
-// ══════════════════════════════════════════════════════════════════
-const bandMats = [];
-function addBand(radius, width, arc, tx, ty, tz, opacity, parent = orb) {
-  const g = new THREE.RingGeometry(radius - width / 2, radius + width / 2, 200, 1, 0, arc);
-  const m = new THREE.ShaderMaterial({
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-    uniforms: { uInner: { value: radius - width / 2 }, uOuter: { value: radius + width / 2 }, uArc: { value: arc },
-                uOpacity: { value: opacity }, uLevel: { value: 0 }, uColor: { value: AMBER.clone().lerp(GOLD, 0.35) } },
-    vertexShader: `varying vec2 vP; void main(){ vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-    fragmentShader: `
-      uniform float uInner, uOuter, uArc, uOpacity, uLevel; uniform vec3 uColor; varying vec2 vP;
-      void main(){
-        float t = (length(vP) - uInner) / (uOuter - uInner);
-        float rim = pow(abs(t - 0.5) * 2.0, 3.0);                  // bright edges, clear middle
-        float body = 0.35 + 0.35 * smoothstep(0.0, 1.0, t);
-        float ang = atan(vP.y, vP.x); if (ang < 0.0) ang += 6.28318;
-        float along = uArc >= 6.2 ? 1.0 : smoothstep(0.0, 0.25, ang) * smoothstep(uArc, uArc - 0.5, ang);   // open ends fade out
-        float a = (body + rim * 0.8) * along * uOpacity * (0.85 + uLevel * 0.2);
-        gl_FragColor = vec4(uColor * a, a);
-      }`,
-  });
-  const mesh = new THREE.Mesh(g, m), grp = new THREE.Group(); grp.add(mesh); grp.rotation.set(tx, ty, tz); parent.add(grp);
-  bandMats.push(m); return grp;
-}
-const rings = [
-  { g: addBand(0.68, 0.10, 5.5, 0.32, 0.2, 0.5, 0.55), speed: 0.12 },
-  { g: addBand(0.46, 0.06, 4.2, -0.45, 0.3, 1.0, 0.5), speed: -0.2 },
-  { g: addBand(1.02, 0.035, 2.3, 1.2, 0.4, -0.3, 0.8), speed: 0.5 },
-  { g: addBand(0.90, 0.03, 1.7, -0.4, 1.1, 0.2, 0.7), speed: -0.4 },
-];
-
-// ══════════════════════════════════════════════════════════════════
-// 4. Nucleus: a dense cluster of short bright horizontal bars in a flat
-//    disc, small rings, and light streaks trailing sideways.
-// ══════════════════════════════════════════════════════════════════
-const nucleus = new THREE.Group(); nucleus.position.set(-0.06, -0.09, 0.05); orb.add(nucleus);
-const nucSegs = new Segs();
-for (let i = 0; i < 520; i++) {
-  const th = rnd(0, 6.28), r = 0.3 * Math.sqrt(Math.random()), x = Math.cos(th) * r, z = Math.sin(th) * r, y = rnd(-0.04, 0.04);
-  const len = rnd(0.02, 0.13) * (Math.random() < 0.15 ? 2.5 : 1);
-  nucSegs.add(new V3(x, y, z), new V3(x + len, y + rnd(-0.004, 0.004), z), pick(HOT, GOLD, GOLD, AMBER), Math.random());
-}
-const nucFrags = ribbonMesh(nucSegs, { width: 1.6, bright: 1.35, flicker: 1.5 });
-nucleus.add(nucFrags);
-[0.1, 0.17, 0.25].forEach((r, i) => { const g = addBand(r, 0.012 + i * 0.004, 3.4 + i * 0.9, rnd(0, 3), rnd(0, 3), rnd(0, 3), 0.9 - i * 0.15, nucleus); rings.push({ g, speed: (i % 2 ? -1 : 1) * (1.2 + i * 0.5) }); });
-function glowTexture() {
-  const c = document.createElement('canvas'); c.width = c.height = 256;
-  const x = c.getContext('2d'), g = x.createRadialGradient(128, 128, 0, 128, 128, 128);
-  g.addColorStop(0, 'rgba(255,200,110,0.9)'); g.addColorStop(0.2, 'rgba(255,150,40,0.5)');
-  g.addColorStop(0.5, 'rgba(255,100,10,0.16)'); g.addColorStop(1, 'rgba(255,80,0,0)');
-  x.fillStyle = g; x.fillRect(0, 0, 256, 256);
+// ══════════════════════════════════════════════════════════════════════
+// 4. Bokeh: defocused points of light. In the stills these soft dots are a
+//    large part of why it reads as a photographed hologram, not a wireframe.
+// ══════════════════════════════════════════════════════════════════════
+function dotTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const x = c.getContext('2d'), g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,225,170,1)'); g.addColorStop(0.28, 'rgba(255,170,60,0.85)');
+  g.addColorStop(0.62, 'rgba(255,110,10,0.28)'); g.addColorStop(1, 'rgba(255,90,0,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128);
   return new THREE.CanvasTexture(c);
 }
-const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
-glow.scale.set(0.5, 0.5, 1); nucleus.add(glow);
-const streaks = [];
-for (let i = 0; i < 18; i++) {
-  const L = rnd(0.25, 0.6), y = rnd(-0.07, 0.07), z = rnd(-0.06, 0.06), off = rnd(-0.05, 0.25);   // mostly trail to one side
-  const pts = [], cols = [], M = 14;
-  for (let k = 0; k <= M; k++) {
-    const t = k / M * 2 - 1; pts.push(new V3(off + t * L, y + Math.sin(t * 3 + i) * 0.004, z));
-    const f = Math.pow(1 - Math.abs(t), 1.6); cols.push(GOLD.r * f * 0.8, GOLD.g * f * 0.8, GOLD.b * f * 0.8);
-  }
-  const geo = new THREE.BufferGeometry().setFromPoints(pts); geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
-  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.8, blending: THREE.AdditiveBlending, depthWrite: false }));
-  line.userData = { base: rnd(0.4, 1), ph: Math.random() * 10 }; nucleus.add(line); streaks.push(line);
+const NB = 420;
+const bPos = new Float32Array(NB * 3), bCol = new Float32Array(NB * 3), bSize = new Float32Array(NB), bPh = new Float32Array(NB);
+for (let i = 0; i < NB; i++) {
+  const d = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
+  // most sit on the shell, some float inside and read as out-of-focus
+  const near = Math.random() < 0.72;
+  const r = near ? R * rnd(0.93, 1.06) : R * rnd(0.2, 0.85);
+  bPos[i * 3] = d.x * r; bPos[i * 3 + 1] = d.y * r; bPos[i * 3 + 2] = d.z * r;
+  const c = near ? pick(GOLD, HOT, AMBER) : pick(AMBER, DEEP);
+  bCol[i * 3] = c.r; bCol[i * 3 + 1] = c.g; bCol[i * 3 + 2] = c.b;
+  bSize[i] = near ? rnd(0.010, 0.030) : rnd(0.030, 0.085);     // defocused ones are big and dim
+  bPh[i] = Math.random();
 }
+const bokehGeo = new THREE.BufferGeometry();
+bokehGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3));
+bokehGeo.setAttribute('color', new THREE.BufferAttribute(bCol, 3));
+bokehGeo.setAttribute('size', new THREE.BufferAttribute(bSize, 1));
+bokehGeo.setAttribute('ph', new THREE.BufferAttribute(bPh, 1));
+const bokehMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+  uniforms: { uMap: { value: dotTexture() }, uScale: { value: 1 }, uTime: { value: 0 }, uLevel: { value: 0 } },
+  vertexShader: `
+    attribute float size, ph; attribute vec3 color;
+    uniform float uScale, uTime, uLevel;
+    varying vec3 vC; varying float vA;
+    void main(){
+      vC = color;
+      float tw = 0.5 + 0.5 * sin(uTime * (0.8 + ph * 2.5) + ph * 40.0);
+      vA = mix(0.18, 1.0, tw) * (0.7 + uLevel * 0.5);
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = size * uScale * (1.0 + uLevel * 0.35) / -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    uniform sampler2D uMap; varying vec3 vC; varying float vA;
+    void main(){
+      vec4 t = texture2D(uMap, gl_PointCoord);
+      gl_FragColor = vec4(vC * t.rgb * t.a * vA, t.a * vA);
+    }`,
+});
+const bokeh = new THREE.Points(bokehGeo, bokehMat);
+bokeh.frustumCulled = false;
+shell.add(bokeh);
 
-// ══════════════════════════════════════════════════════════════════
-// Behaviour. One smoothed loudness "level" (mic, or SKYE's voice) drives
-// everything, plus an "onset" pulse on each new word, because in the
-// reference the structure flares and loosens on stressed words ("Yes",
-// "contact", "Stark") and settles in the gaps.
-// ══════════════════════════════════════════════════════════════════
+// ══════════════════════════════════════════════════════════════════════
+// Behaviour. One smoothed loudness level plus a per-word onset spike drive
+// everything: the reference brightens and loosens on stressed words and
+// settles in the gaps, so that is what the level does here.
+// ══════════════════════════════════════════════════════════════════════
 let state = new URLSearchParams(location.search).get('state') || 'idle';
 let inputLevel = 0, level = 0, onset = 0, prevRaw = 0, simT = 0, micAnalyser = null, micData = null;
-const LINE_SECONDS = LINE_ENV.length / 30, LOOP_GAP = 1.2;
-function lineLevel(t) {                       // looped, with a pause between repeats
+const LINE_SECONDS = LINE_ENV.length / 30, LOOP_GAP = 1.1;
+function lineLevel(t) {
   const u = t % (LINE_SECONDS + LOOP_GAP);
   if (u >= LINE_SECONDS) return 0;
   const f = u * 30, i = Math.floor(f), a = LINE_ENV[i] ?? 0, b = LINE_ENV[i + 1] ?? a;
@@ -326,50 +467,46 @@ function frame() {
   simT += dt;
 
   let raw = inputLevel;
-  if (micAnalyser) { micAnalyser.getByteFrequencyData(micData); let s = 0; for (const v of micData) s += v; raw = Math.max(raw, Math.min(1, (s / micData.length) / 70)); }
+  if (micAnalyser) {
+    micAnalyser.getByteFrequencyData(micData);
+    let s = 0; for (const v of micData) s += v;
+    raw = Math.max(raw, Math.min(1, (s / micData.length) / 70));
+  }
   if (state === 'speaking' && !micAnalyser && inputLevel === 0) raw = lineLevel(simT);
-  if (state === 'listening' && !micAnalyser && inputLevel === 0) raw = 0.14 + 0.1 * Math.sin(simT * 1.4);
+  if (state === 'listening' && !micAnalyser && inputLevel === 0) raw = 0.13 + 0.09 * Math.sin(simT * 1.4);
   if (state === 'thinking') raw = 0.2 + 0.1 * Math.sin(simT * 5.0);
   level += (raw - level) * Math.min(1, dt * 14);
   if (raw < level) level += (raw - level) * Math.min(1, dt * 5);
-  onset = Math.max(onset * Math.exp(-dt * 5), Math.min(1, Math.max(0, raw - prevRaw) * 7));   // a new word starts
+  onset = Math.max(onset * Math.exp(-dt * 5), Math.min(1, Math.max(0, raw - prevRaw) * 7));
   prevRaw = raw;
-  const spin = state === 'thinking' ? 3.0 : state === 'speaking' ? 1.4 : 1.0;
+  const spin = state === 'thinking' ? 2.8 : state === 'speaking' ? 1.35 : 1.0;
 
-  // whole orb
-  orb.rotation.y += dt * 0.12 * spin * (1 + level * 1.8);
-  orb.rotation.x = Math.sin(t * 0.31) * 0.15 + Math.sin(t * 0.13) * 0.05;
-  orb.rotation.z = Math.cos(t * 0.23) * 0.06;
-  orb.scale.setScalar(1 + Math.sin(t * 0.9) * 0.012 + level * 0.06 + onset * 0.03); orb.scale.y *= 0.95;
-  camera.position.set(Math.sin(t * 0.17) * 0.12, Math.sin(t * 0.11) * 0.05, 4.3 - Math.sin(t * 0.07) * 0.25);
+  // The orb drifts rather than spinning on a fixed axis — in the footage it
+  // never completes a revolution, it lolls.
+  orb.rotation.y = Math.sin(t * 0.13) * 0.30 + t * 0.035 * spin;
+  orb.rotation.x = Math.sin(t * 0.29) * 0.10;
+  orb.rotation.z = Math.cos(t * 0.21) * 0.04;
+  orb.scale.setScalar(1 + Math.sin(t * 0.9) * 0.010 + level * 0.05 + onset * 0.025);
+  camera.position.set(Math.sin(t * 0.17) * 0.10, Math.sin(t * 0.11) * 0.04, 4.2 - Math.sin(t * 0.07) * 0.2);
   camera.lookAt(0, 0, 0);
 
-  // shell, dashes, nucleus fragments share the ribbon shader
+  // disc and shell counter-rotate about the shared axis
+  disc.rotation.y += dt * 0.10 * spin * (1 + level * 2.0);
+  shell.rotation.y -= dt * 0.045 * spin * (1 + level * 1.2);
+  discMesh.rotation.y = 0;
+
   ribbonMats.forEach(({ m, flicker0 }) => {
     const u = m.uniforms;
-    u.uTime.value = t; u.uLevel.value = level; u.uPulse.value = onset; u.uExpand.value = level * 0.07;
+    u.uTime.value = t; u.uLevel.value = level; u.uPulse.value = onset;
+    u.uExpand.value = level * 0.055 + onset * 0.02;
     u.uFlicker.value = flicker0 * (state === 'thinking' ? 2.0 : 1);
     u.uRes.value.set(renderer.domElement.width, renderer.domElement.height);
   });
-  shell.rotation.y -= dt * 0.05 * spin;
-  dashes.rotation.y += dt * 0.02;
+  bokehMat.uniforms.uTime.value = t;
+  bokehMat.uniforms.uLevel.value = level;
+  bokehMat.uniforms.uScale.value = renderer.domElement.height * 0.9;
 
-  // rings
-  rings.forEach((r, i) => { r.g.rotation.z += dt * r.speed * spin * (1 + level * 2.6); r.g.rotation.x += dt * 0.03 * (i % 2 ? 1 : -1) * spin; });
-  bandMats.forEach(m => { m.uniforms.uLevel.value = level + onset * 0.6; });
-
-  // nucleus
-  nucleus.rotation.y += dt * 0.25 * spin;
-  const pulse = state === 'thinking' ? 0.5 + 0.5 * Math.sin(t * 6) : 0.5 + 0.5 * Math.sin(t * 1.6);
-  glow.scale.setScalar(0.45 + pulse * 0.07 + level * 0.25 + onset * 0.15);
-  glow.material.opacity = 0.4 + pulse * 0.12 + level * 0.15;
-  streaks.forEach(l => {
-    const f = 0.5 + 0.5 * Math.sin(t * (2 + l.userData.ph) + l.userData.ph * 7);
-    l.scale.x = 0.7 + f * 0.5 + level * 0.5 + onset * 0.3;
-    l.material.opacity = Math.min(0.7, l.userData.base * (0.25 + f * 0.4) + level * 0.15);
-  });
-
-  bloom.strength = 0.4 + level * 0.12 + onset * 0.08 + (state === 'thinking' ? 0.1 : 0);
+  bloom.strength = 0.5 + level * 0.18 + onset * 0.10 + (state === 'thinking' ? 0.08 : 0);
   composer.render();
 }
 frame();
