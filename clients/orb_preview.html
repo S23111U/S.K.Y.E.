@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SKYE Orb Preview</title>
+<link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  /* Stand-in for whatever is behind the orb. The orb canvas is composited with
+     mix-blend-mode: screen, so its black becomes see-through and only the glow
+     is added on top of this, like the hologram in the reference footage. */
+  body {
+    background:
+      radial-gradient(ellipse at 30% 20%, rgba(40,70,120,0.35), transparent 55%),
+      radial-gradient(ellipse at 80% 80%, rgba(20,30,60,0.5), transparent 60%),
+      linear-gradient(160deg, #0a0f1a 0%, #06090f 100%);
+    font-family: 'Share Tech Mono', monospace;
+  }
+  #stage { position: fixed; inset: 0; mix-blend-mode: screen; }
+  #stage canvas { display: block; width: 100%; height: 100%; }
+  #controls { position: fixed; left: 50%; bottom: 22px; transform: translateX(-50%); z-index: 5; display: flex; gap: 8px; }
+  #controls button {
+    background: rgba(255,150,30,0.06); border: 1px solid rgba(255,170,60,0.4); color: #ffb45a;
+    font-family: inherit; font-size: 12px; letter-spacing: 2px; padding: 8px 14px; cursor: pointer;
+  }
+  #controls button.on { background: rgba(255,150,30,0.28); color: #fff3d6; }
+  #hint { position: fixed; left: 24px; top: 20px; color: rgba(255,180,90,0.55); font-size: 11px; letter-spacing: 2px; z-index: 5; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<div id="hint">ORB PREVIEW  -  states below; MIC makes it react to your voice</div>
+<div id="stage"></div>
+<div id="controls">
+  <button data-state="idle" class="on">IDLE</button>
+  <button data-state="listening">LISTENING</button>
+  <button data-state="thinking">THINKING</button>
+  <button data-state="speaking">SPEAKING</button>
+  <button id="mic">MIC</button>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// ── palette: amber / gold / hot yellow-white, as in the footage ──
+const AMBER = new THREE.Color(1.0, 0.40, 0.02);
+const GOLD  = new THREE.Color(1.0, 0.64, 0.08);
+const HOT   = new THREE.Color(1.0, 0.82, 0.40);
+const rnd = (a = 0, b = 1) => a + Math.random() * (b - a);
+const pick = (...c) => c[Math.floor(Math.random() * c.length)];
+
+// ── renderer: black clear + CSS screen blending = transparent background ──
+const stage = document.getElementById('stage');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 1);
+stage.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 50);
+camera.position.set(0, 0, 4.3);
+
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.42, 0.5, 0.34);
+composer.addPass(bloom);
+
+const orb = new THREE.Group();
+scene.add(orb);
+const R = 1.0;
+
+// ══════════════════════════════════════════════════════════════════
+// 1. The shell: thousands of short glowing line fragments that turn at
+//    right angles like circuit traces, densest at the outer surface.
+// ══════════════════════════════════════════════════════════════════
+const V3 = THREE.Vector3;
+function tangentBasis(n) {
+  const a = Math.abs(n.y) < 0.9 ? new V3(0, 1, 0) : new V3(1, 0, 0);
+  const u = a.clone().cross(n).normalize();
+  const v = n.clone().cross(u);
+  return [u, v];
+}
+const positions = [], colors = [], phases = [];
+function pushSeg(a, b, col, ph) {
+  positions.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  colors.push(col.r, col.g, col.b, col.r, col.g, col.b);
+  phases.push(ph, ph);
+}
+function fragmentTrace(radiusFactor) {
+  const n = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
+  const r = R * radiusFactor;
+  let p = n.clone().multiplyScalar(r);
+  const steps = 2 + Math.floor(Math.random() * 4);
+  let ang = Math.floor(Math.random() * 4) * Math.PI / 2 + rnd(-0.12, 0.12);
+  const col = pick(AMBER, AMBER, GOLD, GOLD, HOT).clone().multiplyScalar(rnd(0.55, 1.0));
+  const ph = Math.random();
+  for (let s = 0; s < steps; s++) {
+    const nn = p.clone().normalize();
+    const [u, v] = tangentBasis(nn);
+    const d = u.clone().multiplyScalar(Math.cos(ang)).add(v.clone().multiplyScalar(Math.sin(ang)));
+    const len = R * rnd(0.04, 0.26);
+    const q = p.clone().add(d.multiplyScalar(len)).normalize().multiplyScalar(r);
+    pushSeg(p, q, col, ph);
+    p = q;
+    if (Math.random() < 0.65) ang += (Math.random() < 0.5 ? 1 : -1) * Math.PI / 2 + rnd(-0.1, 0.1);
+  }
+}
+// long sweeping arcs at the edge (great-circle-ish, many small steps)
+function sweepArc() {
+  const n = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
+  const [u, v] = tangentBasis(n);
+  const a0 = rnd(0, Math.PI * 2), span = rnd(0.5, 1.9), tilt = rnd(-0.6, 0.6);
+  const r = R * rnd(0.92, 1.06), col = pick(GOLD, AMBER, HOT).clone().multiplyScalar(rnd(0.6, 1)), ph = Math.random();
+  const N = 26; let prev = null;
+  for (let i = 0; i <= N; i++) {
+    const a = a0 + span * i / N;
+    const c = u.clone().multiplyScalar(Math.cos(a)).add(v.clone().multiplyScalar(Math.sin(a)));
+    const p = c.add(n.clone().multiplyScalar(tilt * Math.sin(a * 2))).normalize().multiplyScalar(r);
+    if (prev) pushSeg(prev, p, col, ph);
+    prev = p;
+  }
+}
+for (let i = 0; i < 1700; i++) {
+  const inner = Math.random() < 0.16;
+  fragmentTrace(inner ? rnd(0.3, 0.78) : 1 - Math.pow(Math.random(), 2.2) * 0.2);
+}
+for (let i = 0; i < 45; i++) sweepArc();
+for (let i = 0; i < 260; i++) fragmentTrace(rnd(1.03, 1.28));   // fragments lifted off the surface
+
+// Each fragment is drawn as a thin camera-facing ribbon (a few pixels wide),
+// because plain GL lines are always 1 px and look like wire, not light.
+const nSeg = positions.length / 6;
+const shellGeo = new THREE.InstancedBufferGeometry();
+shellGeo.setAttribute('corner', new THREE.Float32BufferAttribute([0, -1, 1, -1, 1, 1, 0, 1], 2));
+shellGeo.setIndex([0, 1, 2, 0, 2, 3]);
+const aA = new Float32Array(nSeg * 3), aB = new Float32Array(nSeg * 3), aC = new Float32Array(nSeg * 3), aP = new Float32Array(nSeg);
+for (let i = 0; i < nSeg; i++) {
+  for (let k = 0; k < 3; k++) { aA[i * 3 + k] = positions[i * 6 + k]; aB[i * 3 + k] = positions[i * 6 + 3 + k]; aC[i * 3 + k] = colors[i * 6 + k]; }
+  aP[i] = phases[i * 2];
+}
+shellGeo.setAttribute('aA', new THREE.InstancedBufferAttribute(aA, 3));
+shellGeo.setAttribute('aB', new THREE.InstancedBufferAttribute(aB, 3));
+shellGeo.setAttribute('aColor', new THREE.InstancedBufferAttribute(aC, 3));
+shellGeo.setAttribute('aPhase', new THREE.InstancedBufferAttribute(aP, 1));
+shellGeo.instanceCount = nSeg;
+const shellMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+  uniforms: { uTime: { value: 0 }, uLevel: { value: 0 }, uExpand: { value: 0 }, uFlicker: { value: 1 },
+              uRes: { value: new THREE.Vector2(1, 1) }, uWidth: { value: 1.9 } },
+  vertexShader: `
+    attribute vec2 corner; attribute vec3 aA, aB, aColor; attribute float aPhase;
+    uniform float uTime, uLevel, uExpand, uFlicker, uWidth; uniform vec2 uRes;
+    varying vec3 vC; varying float vA, vSide;
+    void main(){
+      float f = sin(uTime * (1.2 + aPhase * 3.5) * uFlicker + aPhase * 50.0);
+      float pulse = 0.5 + 0.5 * f;
+      // fragments shimmer in and out; louder audio makes more of them burn bright
+      float alpha = mix(0.10, 0.95, pow(pulse, mix(3.0, 1.6, uLevel)));
+      float jit = 0.5 + 0.5 * sin(aPhase * 90.0 + uTime * 9.0);
+      vec3 a = aA + normalize(aA) * uExpand * jit;
+      vec3 b = aB + normalize(aB) * uExpand * jit;
+      vec4 ca = projectionMatrix * modelViewMatrix * vec4(a, 1.0);
+      vec4 cb = projectionMatrix * modelViewMatrix * vec4(b, 1.0);
+      vec2 sa = ca.xy / ca.w * uRes * 0.5, sb = cb.xy / cb.w * uRes * 0.5;
+      vec2 dir = sb - sa; float len = length(dir); dir = len > 1e-4 ? dir / len : vec2(1.0, 0.0);
+      vec2 nrm = vec2(-dir.y, dir.x);
+      vec4 c = mix(ca, cb, corner.x);
+      c.xy += nrm * corner.y * (uWidth * 0.5) / (uRes * 0.5) * c.w;
+      gl_Position = c;
+      vC = aColor; vSide = corner.y;
+      vA = alpha * (0.8 + uLevel * 0.28);
+    }`,
+  fragmentShader: `
+    varying vec3 vC; varying float vA, vSide;
+    void main(){
+      float edge = 1.0 - smoothstep(0.35, 1.0, abs(vSide));
+      float a = vA * edge;
+      gl_FragColor = vec4(vC * a, a);
+    }`,
+});
+const shell = new THREE.Mesh(shellGeo, shellMat);
+shell.frustumCulled = false;
+orb.add(shell);
+
+// ══════════════════════════════════════════════════════════════════
+// 2. The big glowing rings: a few thick, translucent amber tori at
+//    different tilts, each with a wide faint halo, plus thin sweeping arcs.
+// ══════════════════════════════════════════════════════════════════
+const ringMats = [];
+function addRing(radius, tube, tiltX, tiltY, tiltZ, opacity, arc) {
+  const g = new THREE.Group();
+  const core = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, tube, 10, 180, arc || Math.PI * 2),
+    new THREE.MeshBasicMaterial({ color: AMBER.clone().lerp(GOLD, 0.45), transparent: true, opacity: opacity * 0.62, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  const halo = new THREE.Mesh(
+    new THREE.TorusGeometry(radius, tube * 4.5, 10, 180, arc || Math.PI * 2),
+    new THREE.MeshBasicMaterial({ color: AMBER, transparent: true, opacity: opacity * 0.045, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  g.add(halo, core);
+  g.rotation.set(tiltX, tiltY, tiltZ);
+  orb.add(g);
+  ringMats.push(core.material, halo.material);
+  return g;
+}
+const rings = [
+  { g: addRing(0.80, 0.026, 0.55, 0.35, 0.0, 0.62), speed: 0.18, axis: 'z' },
+  { g: addRing(0.60, 0.020, -1.0, 0.2, 0.5, 0.55), speed: -0.24, axis: 'z' },
+  { g: addRing(1.04, 0.012, 1.2, 0.4, -0.3, 0.5, 2.3), speed: 0.55, axis: 'z' },
+  { g: addRing(0.90, 0.010, -0.4, 1.1, 0.2, 0.4, 1.7), speed: -0.42, axis: 'z' },
+];
+
+// ══════════════════════════════════════════════════════════════════
+// 3. The nucleus: a bright knot slightly off-centre, small concentric
+//    rings, and long horizontal light streaks through it.
+// ══════════════════════════════════════════════════════════════════
+function glowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const x = c.getContext('2d'), g = x.createRadialGradient(128, 128, 0, 128, 128, 128);
+  g.addColorStop(0, 'rgba(255,240,190,1)'); g.addColorStop(0.15, 'rgba(255,190,80,0.75)');
+  g.addColorStop(0.45, 'rgba(255,120,20,0.22)'); g.addColorStop(1, 'rgba(255,90,0,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 256, 256);
+  return new THREE.CanvasTexture(c);
+}
+const nucleus = new THREE.Group(); nucleus.position.set(0.06, -0.06, 0.05); orb.add(nucleus);
+const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTexture(), color: 0xffffff, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+glow.scale.set(0.7, 0.7, 1); nucleus.add(glow);
+const knot = [0.05, 0.09, 0.14, 0.20].map((r, i) => {
+  const m = new THREE.Mesh(new THREE.TorusGeometry(r, 0.006 + i * 0.001, 8, 96),
+    new THREE.MeshBasicMaterial({ color: i < 2 ? HOT : GOLD, transparent: true, opacity: 0.9 - i * 0.15, blending: THREE.AdditiveBlending, depthWrite: false }));
+  m.rotation.set(rnd(0, 3), rnd(0, 3), rnd(0, 3)); nucleus.add(m); return m;
+});
+// streaks: polylines with a bright middle fading to nothing at the ends
+const streakGroup = new THREE.Group(); nucleus.add(streakGroup);
+const streaks = [];
+for (let i = 0; i < 16; i++) {
+  const L = rnd(0.25, 0.95), y = rnd(-0.09, 0.09), z = rnd(-0.06, 0.06), off = rnd(-0.1, 0.1);
+  const pts = [], cols = [], M = 14;
+  for (let k = 0; k <= M; k++) {
+    const t = k / M * 2 - 1;
+    pts.push(new V3(off + t * L, y + Math.sin(t * 3 + i) * 0.004, z));
+    const f = Math.pow(1 - Math.abs(t), 1.6);
+    cols.push(GOLD.r * f * 0.8, GOLD.g * f * 0.8, GOLD.b * f * 0.8);
+  }
+  const geo = new THREE.BufferGeometry().setFromPoints(pts);
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  const line = new THREE.Line(geo, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+  line.userData = { base: rnd(0.4, 1), ph: Math.random() * 10, L };
+  streakGroup.add(line); streaks.push(line);
+}
+
+// ══════════════════════════════════════════════════════════════════
+// 4. Sparks: tiny embers that break off the shell and drift outward.
+// ══════════════════════════════════════════════════════════════════
+const NS = 260;
+const sPos = new Float32Array(NS * 3), sCol = new Float32Array(NS * 3), sSize = new Float32Array(NS);
+const sDir = [], sLife = new Float32Array(NS), sSpeed = new Float32Array(NS);
+function respawn(i) {
+  const d = new V3(rnd(-1, 1), rnd(-1, 1), rnd(-1, 1)).normalize();
+  sDir[i] = d; const r = R * rnd(0.85, 1.05);
+  sPos[i * 3] = d.x * r; sPos[i * 3 + 1] = d.y * r; sPos[i * 3 + 2] = d.z * r;
+  sLife[i] = rnd(0.2, 1); sSpeed[i] = rnd(0.05, 0.28);
+  const c = pick(AMBER, GOLD, GOLD, HOT);
+  sCol[i * 3] = c.r; sCol[i * 3 + 1] = c.g; sCol[i * 3 + 2] = c.b; sSize[i] = rnd(1.2, 3.2);
+}
+for (let i = 0; i < NS; i++) { respawn(i); sLife[i] = Math.random(); }
+const sparkGeo = new THREE.BufferGeometry();
+sparkGeo.setAttribute('position', new THREE.BufferAttribute(sPos, 3));
+sparkGeo.setAttribute('color', new THREE.BufferAttribute(sCol, 3));
+sparkGeo.setAttribute('size', new THREE.BufferAttribute(sSize, 1));
+sparkGeo.setAttribute('life', new THREE.BufferAttribute(sLife, 1));
+const sparkMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  uniforms: { uScale: { value: renderer.getPixelRatio() * 7 } },
+  vertexShader: `
+    attribute float size; attribute float life; attribute vec3 color; uniform float uScale; varying vec3 vC; varying float vL;
+    void main(){ vC = color; vL = life; vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_PointSize = size * uScale / -mv.z; gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `
+    varying vec3 vC; varying float vL;
+    void main(){ float d = length(gl_PointCoord - 0.5); if (d > 0.5) discard;
+      gl_FragColor = vec4(vC * (1.0 - d * 2.0) * vL, 1.0); }`,
+});
+orb.add(new THREE.Points(sparkGeo, sparkMat));
+
+// ══════════════════════════════════════════════════════════════════
+// Behaviour: one smoothed "level" (mic or SKYE's voice) drives everything.
+//   idle       slow turn, gentle shimmer
+//   listening  breathes with the microphone, a little wider
+//   thinking   spins up, tight and fast, nucleus pulses quickly
+//   speaking   swells with the voice, fragments jitter outward, more sparks
+// ══════════════════════════════════════════════════════════════════
+let state = new URLSearchParams(location.search).get('state') || 'idle';
+let inputLevel = 0;                 // set from outside: window.SkyeOrb.setLevel(0..1)
+let level = 0, energy = 0, simT = 0;
+let micAnalyser = null, micData = null;
+
+function simulatedLevel(t) {        // stands in for SKYE's voice: syllables and pauses
+  const syll = Math.pow(Math.max(0, Math.sin(t * 9.0) * 0.6 + Math.sin(t * 5.3 + 1) * 0.4), 1.3);
+  const phrase = 0.5 + 0.5 * Math.sin(t * 0.9);
+  return Math.min(0.85, syll * (0.35 + phrase * 0.65));
+}
+window.SkyeOrb = {
+  setLevel: v => { inputLevel = Math.max(0, Math.min(1, v)); },
+  setState: s => { state = s; document.querySelectorAll('#controls [data-state]').forEach(b => b.classList.toggle('on', b.dataset.state === s)); },
+};
+document.querySelectorAll('#controls [data-state]').forEach(b => b.onclick = () => window.SkyeOrb.setState(b.dataset.state));
+window.SkyeOrb.setState(state);
+document.getElementById('mic').onclick = async (e) => {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    micAnalyser = ac.createAnalyser(); micAnalyser.fftSize = 256;
+    ac.createMediaStreamSource(stream).connect(micAnalyser);
+    micData = new Uint8Array(micAnalyser.frequencyBinCount);
+    e.target.classList.add('on');
+  } catch (err) { e.target.textContent = 'MIC BLOCKED'; }
+};
+
+const clock = new THREE.Clock();
+function frame() {
+  requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  simT += dt;
+
+  // choose the raw level for this state
+  let raw = inputLevel;
+  if (micAnalyser) {
+    micAnalyser.getByteFrequencyData(micData);
+    let s = 0; for (let i = 0; i < micData.length; i++) s += micData[i];
+    raw = Math.max(raw, Math.min(1, (s / micData.length) / 70));
+  }
+  if (state === 'speaking' && !micAnalyser && inputLevel === 0) raw = simulatedLevel(simT);
+  if (state === 'listening' && !micAnalyser && inputLevel === 0) raw = 0.12 + 0.1 * Math.sin(simT * 1.4);
+  if (state === 'thinking') raw = 0.22 + 0.12 * Math.sin(simT * 5.0);
+  level += (raw - level) * Math.min(1, dt * 12);          // fast rise
+  if (raw < level) level += (raw - level) * Math.min(1, dt * 4);   // slower fall
+  const spin = state === 'thinking' ? 3.2 : state === 'speaking' ? 1.5 : 1.0;
+  energy += ((state === 'idle' ? 0 : 1) - energy) * dt * 2;
+
+  // whole orb
+  orb.rotation.y += dt * 0.13 * spin * (1 + level * 2.5);
+  orb.rotation.x = Math.sin(t * 0.31) * 0.16 + Math.sin(t * 0.13) * 0.05;
+  orb.rotation.z = Math.cos(t * 0.23) * 0.06;
+  const breathe = 1 + Math.sin(t * 0.9) * 0.012;
+  orb.scale.setScalar(breathe * (1 + level * 0.09));
+  camera.position.x = Math.sin(t * 0.17) * 0.12;
+  camera.lookAt(0, 0, 0);
+
+  // fragments shimmer; speech shakes them outward
+  shellMat.uniforms.uTime.value = t;
+  shellMat.uniforms.uRes.value.set(renderer.domElement.width, renderer.domElement.height);
+  shellMat.uniforms.uLevel.value = level;
+  shellMat.uniforms.uExpand.value = level * 0.11;
+  shellMat.uniforms.uFlicker.value = state === 'thinking' ? 2.2 : 1;
+  shell.rotation.y -= dt * 0.05 * spin;                     // counter-turn against the rings
+
+  // rings
+  rings.forEach((r, i) => {
+    r.g.rotation.z += dt * r.speed * spin * (1 + level * 3);
+    r.g.rotation.x += dt * 0.03 * (i % 2 ? 1 : -1) * spin;
+  });
+  ringMats.forEach((m, i) => { m.opacity = m.userData.o0 ??= m.opacity; m.opacity = m.userData.o0 * (0.85 + level * 0.45); });
+
+  // nucleus
+  const pulse = state === 'thinking' ? 0.5 + 0.5 * Math.sin(t * 6) : 0.5 + 0.5 * Math.sin(t * 1.6);
+  glow.scale.setScalar(0.6 + pulse * 0.1 + level * 0.35 + (state === 'thinking' ? 0.1 : 0));
+  glow.material.opacity = 0.5 + pulse * 0.2 + level * 0.25;
+  knot.forEach((k, i) => { k.rotation.x += dt * (0.6 + i * 0.35) * spin; k.rotation.y += dt * (0.8 - i * 0.2) * spin; });
+  streaks.forEach(l => {
+    const f = 0.5 + 0.5 * Math.sin(t * (2 + l.userData.ph) + l.userData.ph * 7);
+    l.scale.x = 0.7 + f * 0.5 + level * 0.9;
+    l.material.opacity = Math.min(0.9, l.userData.base * (0.3 + f * 0.45) + level * 0.3);
+  });
+
+  // sparks: more of them, and faster, the louder it gets
+  const boost = 1 + level * 5 + (state === 'thinking' ? 1.5 : 0);
+  for (let i = 0; i < NS; i++) {
+    sLife[i] -= dt * (0.35 + sSpeed[i]) * (0.6 + level * 1.5);
+    if (sLife[i] <= 0) { respawn(i); continue; }
+    const d = sDir[i], k = sSpeed[i] * boost * dt;
+    sPos[i * 3] += d.x * k; sPos[i * 3 + 1] += d.y * k; sPos[i * 3 + 2] += d.z * k;
+  }
+  sparkGeo.attributes.position.needsUpdate = true; sparkGeo.attributes.life.needsUpdate = true;
+
+  bloom.strength = 0.42 + level * 0.3 + (state === 'thinking' ? 0.1 : 0);
+  composer.render();
+}
+frame();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>
