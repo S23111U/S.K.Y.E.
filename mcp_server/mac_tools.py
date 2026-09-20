@@ -288,3 +288,17 @@ def _when_words(dt):
     today = datetime.now().date()
     day = "today" if dt.date() == today else "tomorrow" if dt.date() == today + timedelta(days=1) else dt.strftime("%A")
     return f"{day} at {dt.strftime('%-I:%M %p').replace(':00 ', ' ')}"
+
+
+def front_browser_url():
+    """The address of the tab in front, in Safari or Chrome, whichever is running."""
+    for app, expr in (("Safari", "URL of front document"), ("Google Chrome", "URL of active tab of front window")):
+        try:
+            running = _osa(f'tell application "System Events" to return (name of processes) contains "{app}"')
+            if running == "true":
+                url = _osa(f'tell application "{app}" to return {expr}')
+                if url:
+                    return url
+        except MacError:
+            continue
+    return ""

@@ -860,6 +860,7 @@ def _scheduler_loop():
 # asyncio.run_coroutine_threadsafe(), the standard pattern for exactly this.
 MCP_SERVER_PATH = os.path.join(ROOT, "mcp_server", "server.py")
 TOOL_ROUTES = {}  # tool name -> ClientSession
+TOOL_TIMEOUTS = {"analyze_video": 180}   # Gemini watching a video takes far longer than the default 30 s
 _mcp_loop = None
 _mcp_exit_stack = None
 
@@ -898,7 +899,7 @@ def call_mcp_tool(name, arguments):
     async def _call():
         return await session.call_tool(name, arguments)
 
-    result = asyncio.run_coroutine_threadsafe(_call(), _mcp_loop).result(timeout=30)
+    result = asyncio.run_coroutine_threadsafe(_call(), _mcp_loop).result(timeout=TOOL_TIMEOUTS.get(name, 30))
     text = result.content[0].text if result.content else None
     if result.is_error:
         raise RuntimeError(text or "unknown MCP tool error")
@@ -1065,6 +1066,9 @@ def stream_skye_response(user_input: str):
     if direct:
         tool, args = direct
         LAST_TOOL_RESULT = ""
+        if tool == "analyze_video":
+            LAST_TURN_TIMING["filler"] = einstein.VIDEO_FILLER
+            yield frame("filler", text=einstein.VIDEO_FILLER, mood="calm")
         if tool in CONFIRM_TOOLS:
             _PENDING.update(tool=tool, args=args, at=time.time())
             result = f"I am about to {_describe_action(tool, args)}. Shall I go ahead?"
@@ -1829,7 +1833,7 @@ def start_server_mode():
     # Synthesize every filler phrase now (a no-op once cached on disk) so the
     # first one a user triggers is instant instead of waiting on the engine.
     threading.Thread(
-        target=lambda: [tts.cached_phrase(p, m) for m, ps in [*FILLERS.items(), ("calm", TOOL_FILLERS), ("calm", einstein.FILLERS)] for p in ps],
+        target=lambda: [tts.cached_phrase(p, m) for m, ps in [*FILLERS.items(), ("calm", TOOL_FILLERS), ("calm", einstein.FILLERS), ("calm", [einstein.VIDEO_FILLER])] for p in ps],
         daemon=True,
     ).start()
 

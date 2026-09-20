@@ -56,6 +56,9 @@ _RULES = [
     ("read_messages", re.compile(r"\bwhat did (?P<c>[\w' .-]+?) (?:text|message|say to) me\b|\b(?:messages?|texts?|imessages?) from (?P<c2>[\w' .-]+?)" + _END, I), lambda m: {"contact": (m.group("c") or m.group("c2") or "").strip()}),
     ("read_messages", re.compile(r"^(?!.*\b(?:send|write|reply|draft|compose)\b).*\b(?:read|check|show|open)\b.{0,20}\b(?:my |the )?(?:latest |last |recent |newest )?(?:messages?|texts?|imessages?)" + _END, I), lambda m: {}),
 
+    ("analyze_video", re.compile(r"\b(?:watch|analy[sz]e|summari[sz]e|break down|go through|look at|explain|review|check out|tell me about|what(?:'s| is| does)|transcribe)\b.{0,60}?\b(?:video|youtube|clip|tutorial)\b|\b(?:video|youtube)\b.{0,20}\b(?:i(?:'m| am) (?:watching|on)|(?:that|which) (?:is )?(?:open|playing)|open right now)\b|(?:youtu\.be|youtube\.com)/\S+", I),
+     lambda m: {"request": re.sub(r"https?://\S+", "", m.string).strip(), "url": (re.search(r"https?://\S*(?:youtu\.be|youtube\.com)/\S+", m.string) or [""])[0] if re.search(r"https?://\S*(?:youtu\.be|youtube\.com)/\S+", m.string) else ""}),
+
     ("show_media", re.compile(r"\b(?:show|display|put up|pull up)\b.{0,20}(?P<u>https?://\S+)", I), lambda m: {"url": m.group("u")}),
 
     ("next_event", re.compile(r"\b(?:what(?:'s| is)|when(?:'s| is)) my next (?:event|meeting|appointment)\b|\bnext (?:event|meeting|appointment)\b.{0,15}\?", I), lambda m: {}),

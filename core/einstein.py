@@ -114,19 +114,33 @@ def _parse(text: str):
     return " ".join(first[:3]), text.strip()
 
 
-def think(question: str, context: str = ""):
-    """(summary, detail, model) — raises RuntimeError with a spoken-safe reason."""
+SYSTEM_VIDEO = (
+    "You are the video-understanding engine behind a voice assistant. Watch the video (its visuals and its audio) and do "
+    "exactly what the user asks about it: summarise it, explain a part, list steps, answer a question, or say what is "
+    "on screen. Be accurate about what is actually in the video; if the user's request is not covered, say so. Do not "
+    "use LaTeX or dollar signs. When timestamps help, give them as mm:ss.\n\n"
+    "Format your final answer EXACTLY as:\n"
+    "SUMMARY: <2 to 4 plain spoken sentences; no markdown, no lists>\n"
+    "DETAIL:\n<the fuller answer in light Markdown>"
+)
+VIDEO_FILLER = "Let me watch that. This may take a moment."
+
+
+def think(question: str, context: str = "", video_url: str = ""):
+    """(summary, detail, model) — raises RuntimeError with a spoken-safe reason.
+    With `video_url` (a YouTube link) Gemini watches the video itself."""
     key = os.getenv("GOOGLE_API_KEY")
     if not key:
         raise RuntimeError("no key")
-    prompt = (f"[Background]\n{context}\n\n" if context else "") + f"[Question]\n{question}"
+    prompt = (f"[Background]\n{context}\n\n" if context else "") + f"[{'Request' if video_url else 'Question'}]\n{question}"
+    parts = ([{"fileData": {"fileUri": video_url}}] if video_url else []) + [{"text": prompt}]
     last = "unavailable"
     for model in MODELS:
         try:
             r = requests.post(
                 ENDPOINT.format(model=model), headers={"x-goog-api-key": key}, timeout=TIMEOUT_S,
-                json={"systemInstruction": {"parts": [{"text": SYSTEM}]},
-                      "contents": [{"parts": [{"text": prompt}]}],
+                json={"systemInstruction": {"parts": [{"text": SYSTEM_VIDEO if video_url else SYSTEM}]},
+                      "contents": [{"parts": parts}],
                       "generationConfig": _config(model)})
         except requests.RequestException as e:
             last = str(e)[:80]
