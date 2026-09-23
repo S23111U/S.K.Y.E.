@@ -98,6 +98,7 @@ jarvis/
 │   ├── protocol.py             # Newline-delimited JSON frames (client <-> server)
 │   ├── stt.py                  # Whisper speech-to-text (MLX): vocabulary hints, noise/hallucination filter, logs/stt_*.jsonl
 │   ├── tts_client.py           # Talks to tts_server/ (Chatterbox Turbo voice)
+│   ├── local_voice.py          # CLI's local mic capture + speaker playback (PyAudio), for :voice/:speak
 │   ├── mood.py                 # Picks a speaking mood per reply
 │   ├── direct_routes.py        # requests that map straight to a tool (timer, alarm, music, weather...) - no model guessing
 │   ├── proactive.py            # check-ins, task follow-ups, to-do nudges (rules + quiet hours)
@@ -155,8 +156,9 @@ pyenv shell jarvis-py311
 
 ### 2. Install Dependencies
 ```bash
-pip install mlx mlx-lm sentence-transformers numpy scikit-learn tavily-python google-generativeai python-dotenv google-auth-oauthlib google-api-python-client dateparser
+pip install mlx mlx-lm sentence-transformers numpy scikit-learn tavily-python google-generativeai python-dotenv google-auth-oauthlib google-api-python-client dateparser pyaudio
 ```
+`pyaudio` needs PortAudio; if the wheel fails to build, `brew install portaudio` first. It's only used for the CLI's local `:voice`/`:speak` (mic capture and speech playback straight from the terminal) — the browser UI doesn't need it.
 
 **Voice (TTS) runs in its own environment.** Chatterbox Turbo (via `mlx-audio`) needs a newer `mlx` than the LLM's pinned runtime, so `tts_server/` is spawned as a subprocess using the repo's `.venv`:
 ```bash
@@ -181,7 +183,19 @@ WEATHER_API_KEY=your_key_here  # For live weather
 ```bash
 python core/core_v2.py
 ```
-Select **[1]** for an interactive terminal session or **[2]** to expose a Socket Server on port `12345`.
+This always starts the terminal (CLI) session — it's the primary interface. At startup it asks whether to also launch the browser UI (`[y/N]`); either answer, the socket server on port `12345` is always listening, so the UI can be opened later too, from inside the CLI, with `:ui`.
+
+Inside the CLI:
+| Command | Does |
+|---|---|
+| *(plain text)* | chat with SKYE |
+| `:voice` | toggle microphone input on (turns speaking replies on with it); say a stop phrase ("stop listening", "go to sleep") to turn it back off |
+| `:speak` | toggle SKYE speaking her replies aloud, independent of `:voice` |
+| `:ui` | open the browser UI (starts it first if it isn't running yet) |
+| `:help` | show the command list again |
+| `exit` / `quit` / Ctrl+C | stop |
+
+Voice in the CLI needs a Full Disk / Microphone permission grant the first time macOS asks, same as the browser. Unlike the browser, it has no wake word and no voice barge-in by design — `:voice` is an explicit per-session opt-in rather than an always-listening mic (see `core/local_voice.py`), and interrupting SKYE mid-reply is by pressing any key.
 
 ### 5. Consolidate Memory
 After a conversation session, run the overnight pipeline so S.K.Y.E. remembers it:

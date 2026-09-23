@@ -25,6 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
 
 from plyer import notification
+import clients.browser as clients_browser
 from clients.browser import start_http_server, open_browser, start_ws_server
 from core.protocol import frame, FrameReader
 from core import stt
@@ -1610,33 +1611,198 @@ def rule_based_response(speech: str):
 # =========================================================
 # MODES: CLI VS SOCKET
 # =========================================================
+# =========================================================
+# CLI — the primary interface. The browser UI is optional, offered once at
+# startup and reachable any time after with :ui; both are just clients of
+# the same socket server, so a CLI turn and a browser turn behave identically
+# (mood, fillers, tool calls, proactive messages, barge-in) — the CLI talks
+# to itself over the loopback socket rather than re-implementing any of that.
+# =========================================================
+_TTY = sys.stdout.isatty()
+_ANSI = {"reset": "\033[0m", "bold": "\033[1m", "dim": "\033[2m",
+         "cyan": "\033[36m", "orange": "\033[38;5;208m", "green": "\033[32m",
+         "red": "\033[31m", "yellow": "\033[33m", "grey": "\033[90m"}
+
+
+def _sty(text, *codes):
+    if not _TTY:
+        return text
+    return "".join(_ANSI[c] for c in codes) + text + _ANSI["reset"]
+
+
+_CLI_VOICE_STOP_RE = re.compile(
+    r"\b(?:stop listening|go to sleep|stop voice|voice off|exit voice|turn off (?:the )?voice|that'?s enough(?: for now)?|voice mode off)\b",
+    re.IGNORECASE,
+)
+
+
+def _cli_help():
+    print(_sty("  :voice", "cyan") + "         toggle microphone input on/off (speaking replies turn on with it)")
+    print(_sty("  :speak", "cyan") + "         toggle SKYE speaking her replies aloud, independent of :voice")
+    print(_sty("  :ui", "cyan") + "            open the visual UI in your browser (starts it if not already running)")
+    print(_sty("  :help", "cyan") + "          show this again")
+    print(_sty("  exit / quit", "cyan") + "    or Ctrl+C, to stop\n")
+
+
 def start_cli_mode():
-    print(f"\nS.K.Y.E. INTERACTIVE CLI (SESSION: {SESSION_ID})\nType 'exit' to quit.\n")
-    while True:
+    print(_sty(f"\nS.K.Y.E. — SESSION {SESSION_ID}", "bold", "orange"))
+    print(_sty("Local voice assistant. Type to chat, or turn on :voice to talk.\n", "grey"))
+    try:
+        ans = input(_sty("Launch the visual UI as well? ", "cyan") + _sty("[y/N] ", "grey")).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        ans = ""
+    if ans in ("y", "yes"):
+        launch_ui(open_tab=True)
+        print(_sty(f"UI opening at http://localhost:{clients_browser.HTTP_PORT}/{clients_browser.HTML_PATH}\n", "grey"))
+    _cli_help()
+
+    # A loopback client of the socket server this same process is already
+    # running (see _boot_shared_services) — this is what gives the CLI real
+    # mood-shaped TTS, fillers, and barge-in for free instead of a second,
+    # parallel implementation of _run_turn.
+    sock = socket.create_connection(("127.0.0.1", PORT))
+    reader = FrameReader()
+    sock_file = sock.makefile("rb")
+
+    def _frames():
+        while True:
+            chunk = sock_file.read1(4096) if hasattr(sock_file, "read1") else sock_file.read(4096)
+            if not chunk:
+                return
+            yield from reader.feed(chunk)
+
+    frame_iter = _frames()
+
+    mic = speaker = barge = None
+    voice_on = False
+    speak_on = False
+
+    def _ensure_voice_deps():
+        nonlocal mic, speaker, barge
+        if mic is not None:
+            return True
         try:
-            user_input = input("You: ").strip()
-            if not user_input:
-                continue
-            if user_input.lower() in {"exit", "quit"}:
+            from core.local_voice import LocalMic, LocalSpeaker, BargeWatcher
+            mic, speaker, barge = LocalMic(), LocalSpeaker(), BargeWatcher()
+            return True
+        except Exception as e:
+            print(_sty(f"Voice I/O unavailable on this machine: {e}", "red"))
+            return False
+
+    def _run_one_turn(text):
+        """Sends one text frame over the loopback socket and handles every
+        frame of the reply — printing it, and (if speak_on) playing its
+        audio as it streams in, with a keypress able to cut it off mid-reply
+        the same way barge-in works for the browser."""
+        sock.sendall((json.dumps({"type": "text", "text": text}) + "\n").encode())
+        streamed = False
+        for msg in frame_iter:
+            t = msg.get("type")
+            if t == "skill" and msg.get("skill"):
+                print(_sty(f"[{msg['skill']}]", "grey"), end=" ", flush=True)
+            elif t == "token":
+                if not streamed:
+                    print(_sty("SKYE: ", "bold", "orange"), end="", flush=True)
+                    streamed = True
+                print(msg["text"], end="", flush=True)
+            elif t == "tool":
+                print(_sty(f"[{msg['name']}]", "dim"), end="", flush=True)
+            elif t == "done":
+                label = _sty("SKYE: ", "bold", "orange")
+                if streamed:
+                    print(f"\r\033[K{label}{msg['text']}")
+                else:
+                    print(f"{label}{msg['text']}")
+            elif t == "canvas":
+                print(_sty(f"  [on screen: {msg.get('title', 'details')} — open the UI (:ui) to see it]", "grey"))
+            elif t == "audio_chunk" and speak_on and speaker is not None:
+                if barge is not None:
+                    barge.arm()
+                try:
+                    speaker.write_chunk(base64.b64decode(msg["pcm"]))
+                except Exception as e:
+                    print(_sty(f"[playback error: {e}]", "red"))
+                if barge is not None and barge.stop.is_set():
+                    sock.sendall((json.dumps({"type": "cancel"}) + "\n").encode())
+            elif t == "turn_end":
+                if barge is not None:
+                    barge.disarm()
+                break
+            elif t == "error":
+                print(_sty(f"[error: {msg.get('message')}]", "red"))
+
+    try:
+        while True:
+            try:
+                if voice_on:
+                    if not _ensure_voice_deps():
+                        voice_on = False
+                        continue
+                    print(_sty("Listening...", "grey"), end="\r", flush=True)
+                    pcm = mic.listen_utterance()
+                    print(" " * 40, end="\r")
+                    if not pcm:
+                        continue
+                    user_input = stt.transcribe_pcm(pcm, sample_rate=16000).strip()
+                    if not user_input:
+                        continue
+                    print(_sty("You (voice): ", "cyan") + user_input)
+                    if _CLI_VOICE_STOP_RE.search(user_input):
+                        # Voice mode has no other way to turn itself off — the
+                        # loop is blocked listening, not reading typed :voice
+                        # commands — so a spoken stop phrase is the only exit.
+                        voice_on = False
+                        print(_sty("Voice input off. Type to keep chatting, or :voice to talk again.", "grey"))
+                        continue
+                    stt.remember(user_input)
+                else:
+                    user_input = input(_sty("You: ", "cyan")).strip()
+            except (EOFError, KeyboardInterrupt):
                 break
 
-            print("\nSKYE: ", end="", flush=True)
-            final = ""
-            for f in stream_skye_response(user_input):
-                data = json.loads(f.decode())
-                if data["type"] == "token":
-                    print(data["text"], end="", flush=True)
-                elif data["type"] == "tool":
-                    print(f"[{data['name']}]", end="", flush=True)
-                elif data["type"] == "done":
-                    final = data["text"]
-            print()
-            if final:
-                # Overwrite the streamed text with the guardrailed version.
-                print(f"\r\033[KSKYE: {final}\n")
-        except KeyboardInterrupt:
-            break
-    print(f"\nTelemetry saved to logs/telemetry_{SESSION_ID}.jsonl\nSystems OFFLINE.")
+            if not user_input:
+                continue
+            low = user_input.lower()
+            if low in {"exit", "quit"}:
+                break
+            if low in (":help", ":h"):
+                _cli_help()
+                continue
+            if low == ":ui":
+                launch_ui(open_tab=True)
+                print(_sty(f"UI opening at http://localhost:{clients_browser.HTTP_PORT}/{clients_browser.HTML_PATH}", "grey"))
+                continue
+            if low == ":voice":
+                if voice_on:
+                    voice_on = False
+                    print(_sty("Voice input off.", "grey"))
+                elif _ensure_voice_deps():
+                    voice_on = True
+                    speak_on = True
+                    print(_sty("Voice input on — speaking replies too. Say a sleep-type phrase or type :voice again to stop.", "grey"))
+                continue
+            if low == ":speak":
+                if speak_on:
+                    speak_on = False
+                    print(_sty("SKYE will stay quiet (text only).", "grey"))
+                elif _ensure_voice_deps():
+                    speak_on = True
+                    print(_sty("SKYE will speak her replies.", "grey"))
+                continue
+
+            _run_one_turn(user_input)
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+        if mic is not None:
+            mic.close()
+        if speaker is not None:
+            speaker.close()
+        if barge is not None:
+            barge.shutdown()
+    print(_sty(f"\nTelemetry saved to logs/telemetry_{SESSION_ID}.jsonl\nSystems OFFLINE.", "grey"))
 
 
 def _speak_filler(conn, send_lock, phrase, mood, cancel):
@@ -1870,19 +2036,42 @@ def _handle_client_loop(conn, reader, send_lock):
         turns.put(None)
 
 
-def start_server_mode():
-    try:
-        print("[Bridge Integration]: Booting UI Servers concurrently...")
+_UI_LAUNCHED = threading.Event()
+
+
+def launch_ui(open_tab=True):
+    """Starts the HTTP + WebSocket bridge that lets the browser UI attach to
+    the socket server (already listening — see _boot_shared_services), and
+    optionally opens a tab. Idempotent: the bridge is only ever started once
+    a session; calling this again (e.g. the CLI's :ui after having already
+    said yes at startup) just opens another tab onto the running bridge."""
+    if not _UI_LAUNCHED.is_set():
+        _UI_LAUNCHED.set()
         threading.Thread(target=start_http_server, daemon=True).start()
+        threading.Thread(target=lambda: asyncio.run(start_ws_server()), daemon=True).start()
+    if open_tab:
         threading.Thread(target=open_browser, daemon=True).start()
 
-        def run_async_ws():
-            asyncio.run(start_ws_server())
 
-        threading.Thread(target=run_async_ws, daemon=True).start()
-    except Exception as bridge_err:
-        print(f"[Bridge Error]: Could not automatically open browser UI: {bridge_err}")
+def _run_socket_server(server_socket):
+    """Accepts client connections forever. Runs in the background so it's
+    available the instant it's needed — by an optional browser UI, or by the
+    CLI itself, which talks to this same server as a loopback client (see
+    start_cli_mode) rather than duplicating turn handling."""
+    print(f"\nS.K.Y.E. SOCKET SERVER LISTENING ON {HOST}:{PORT}")
+    print(f"SESSION: {SESSION_ID} (Telemetry recording active)")
+    while True:
+        conn, addr = server_socket.accept()
+        print(f"Client connected: {addr}")
+        threading.Thread(target=handle_client, args=(conn,), daemon=True).start()
 
+
+def _boot_shared_services():
+    """Everything both the CLI and an optional browser UI need, regardless
+    of whether the UI is ever actually opened: the scheduler (alarms,
+    proactive check-ins, nightly consolidation), filler pre-synthesis, and
+    the socket server itself. Runs once, before the CLI's own loop starts,
+    so its loopback connection to that socket server can succeed immediately."""
     threading.Thread(target=_scheduler_loop, daemon=True).start()
 
     # Synthesize every filler phrase now (a no-op once cached on disk) so the
@@ -1892,30 +2081,18 @@ def start_server_mode():
         daemon=True,
     ).start()
 
-    with socket.socket() as server_socket:
-        server_socket.bind((HOST, PORT))
-        server_socket.listen()
-        print(f"\nS.K.Y.E. SOCKET SERVER LISTENING ON {HOST}:{PORT}")
-        print(f"SESSION: {SESSION_ID} (Telemetry recording active)")
-        while True:
-            conn, addr = server_socket.accept()
-            print(f"Client connected: {addr}")
-            threading.Thread(target=handle_client, args=(conn,), daemon=True).start()
+    server_socket = socket.socket()
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind((HOST, PORT))
+    server_socket.listen()
+    threading.Thread(target=_run_socket_server, args=(server_socket,), daemon=True).start()
 
 
 # =========================================================
-# ENTRYPOINT
+# ENTRYPOINT — CLI first. The browser UI is optional and offered as a prompt
+# (see start_cli_mode), not a separate exclusive mode: both are always just
+# clients of the same socket server, startable together or not at all.
 # =========================================================
 if __name__ == "__main__":
-    print("=======================================")
-    print("S.K.Y.E. INTERACTION MODES")
-    print("=======================================")
-    print("[1] CLI Chat (Interactive Terminal)")
-    print("[2] Socket Server (Listen on 0.0.0.0:12345)")
-    print("=======================================")
-
-    choice = input("Select mode [1/2]: ").strip()
-    if choice == "2":
-        start_server_mode()
-    else:
-        start_cli_mode()
+    _boot_shared_services()
+    start_cli_mode()
