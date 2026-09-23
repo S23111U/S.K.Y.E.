@@ -368,6 +368,38 @@
 
   // ── AUDIO ──
   let audioContext,analyser,dataArray,isAudioActive=false;
+  const MIC_CONSTRAINTS={echoCancellation:true, noiseSuppression:true, autoGainControl:true};
+  // macOS drops a Bluetooth headset (AirPods etc.) out of its high-quality
+  // music-output profile (A2DP) the instant anything captures audio from
+  // THAT SAME device's own microphone, because the low-quality bidirectional
+  // profile (HFP) is the only one that supports simultaneous mic input —
+  // this is what made continuous listening audibly ruin music playback.
+  // A completely separate input device (the laptop's own mic) never touches
+  // that switch, so explicitly picking it — rather than whatever the OS
+  // currently has set as the default input, which can silently be the
+  // headset — keeps the headset in full-quality output the whole time,
+  // with no change to how continuously SKYE listens.
+  async function _pickInputStream(){
+    let stream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS});
+    try{
+      // Device labels are blank until a permission grant unlocks them for
+      // this origin — the getUserMedia call just above is what does that,
+      // so this enumerate only returns anything useful right after it.
+      const inputs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput');
+      const isWireless=l=>/airpods|bluetooth|beats|buds|headset|headphones|earbuds|bose|jbl|galaxy\s*buds/i.test(l||'');
+      const builtIn=inputs.find(d=>/macbook|built.?in|internal\s*mic/i.test(d.label||''));
+      const current=stream.getAudioTracks()[0];
+      const need=builtIn && !new RegExp(builtIn.label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i').test(current?.label||'');
+      if(need || (!builtIn && isWireless(current?.label))){
+        const target=builtIn || inputs.find(d=>!isWireless(d.label));
+        if(target){
+          stream.getTracks().forEach(t=>t.stop());
+          stream=await navigator.mediaDevices.getUserMedia({audio:{...MIC_CONSTRAINTS, deviceId:{exact:target.deviceId}}});
+        }
+      }
+    }catch(e){ console.warn('mic device selection skipped, using the default input:', e); }
+    return stream;
+  }
   window.initAudio=async function(){
     try{
       // Web Audio playback (SKYE's replies) also needs a real user gesture to
@@ -378,9 +410,7 @@
       // `let` bindings — expose the ones it needs on `window` explicitly.
       window.audioContext=audioContext;
       if(audioContext.state==='suspended')await audioContext.resume();
-      const stream=await navigator.mediaDevices.getUserMedia({audio:{
-        echoCancellation:true, noiseSuppression:true, autoGainControl:true
-      }});
+      const stream=await _pickInputStream();
       window.micStream=stream;
       analyser=audioContext.createAnalyser(); analyser.fftSize=256;
       audioContext.createMediaStreamSource(stream).connect(analyser);
@@ -406,39 +436,6 @@
       document.getElementById('start-btn').textContent='AUDIO UNAVAILABLE';
     }
   };
-  // Sleep used to leave the microphone hardware open the whole time — only
-  // the JS processing was gated — "so a wake word could be heard". That kept
-  // the OS's input session alive continuously, which on Bluetooth headsets
-  // forces the low-quality call profile (HFP) instead of high-quality music
-  // playback for as long as any track exists, awake or "asleep". Real fix:
-  // going to sleep now actually stops the mic track, releasing the hardware;
-  // waking is by keypress/click (see the classic script) since there is no
-  // longer a live mic to hear "Skye" with while asleep.
-  window.releaseMic = function(){
-    if(window.micStream){ window.micStream.getTracks().forEach(t=>{ try{t.stop();}catch(e){} }); }
-    window.micStream=null;
-    isAudioActive=false;
-    if(window.stopVoice)window.stopVoice();
-  };
-  window.reacquireMic = async function(){
-    try{
-      if(audioContext.state==='suspended')await audioContext.resume();
-      const stream=await navigator.mediaDevices.getUserMedia({audio:{
-        echoCancellation:true, noiseSuppression:true, autoGainControl:true
-      }});
-      window.micStream=stream;
-      if(!analyser){ analyser=audioContext.createAnalyser(); analyser.fftSize=256; dataArray=new Uint8Array(analyser.frequencyBinCount); }
-      audioContext.createMediaStreamSource(stream).connect(analyser);
-      isAudioActive=true;
-      if(window.startVoice)window.startVoice();
-      return true;
-    }catch(e){
-      console.error('reacquireMic failed:', e);
-      if(window.setSkyeText)window.setSkyeText('MIC UNAVAILABLE - CLICK TO RETRY');
-      return false;
-    }
-  };
-
   function getVolume(){
     let v=0;
     if(isAudioActive){
@@ -673,7 +670,7 @@
     const text=input.value.trim();
     if(!text||waiting||ws.readyState!==WebSocket.OPEN)return;
 
-    if(asleep){ wake(); }    // typing wakes SKYE (re-opens the mic too — see wake())
+    if(asleep){ asleep=false; vstatus('LISTENING'); }    // typing wakes SKYE
     if(STOP.test(text)){                                 // "go to sleep" typed, same as spoken
       input.value=''; input.style.height='auto';
       goToSleep(text);
@@ -1076,38 +1073,23 @@
     try{ if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'voice_event',kind,text})+'\n'); }catch(e){}
   }
 
-  // Going to sleep fully releases the microphone (see window.releaseMic in
-  // the module script above) rather than just muting it, so a live mic isn't
-  // sitting open the whole time forcing a Bluetooth headset onto its
-  // low-quality call profile. The trade-off: SKYE can no longer hear "Skye"
-  // to wake itself back up, since there is no mic to hear it with — wake by
-  // pressing any key or clicking anywhere on the page instead.
+  // Sleep only gates processing — the mic itself stays open the whole time so
+  // "Skye" can wake it back up hands-free, same as before. Fully releasing
+  // the mic on sleep (an earlier attempt) traded that away for a keypress/
+  // click to wake, which defeats the point of a voice assistant; it's been
+  // dropped. What actually stops a Bluetooth headset's mic use from forcing
+  // its low-quality call profile onto simultaneous music playback is instead
+  // handled once, in initAudio() above: the capture explicitly targets the
+  // Mac's built-in microphone rather than the headset's, so the headset's
+  // *output* side never has to share the connection with an input session.
   function goToSleep(text){
     if(text)logVoiceEvent('sleep',text);
     asleep=true;
     clearPending(); busyQueue='';
     interruptSpeech();
     resetVadState();
-    if(window.releaseMic)window.releaseMic();
-    vstatus('SLEEPING - PRESS ANY KEY OR CLICK TO WAKE');
+    vstatus('SLEEPING - SAY "SKYE"');
   }
-  async function wake(){
-    if(!asleep)return;
-    asleep=false;
-    vstatus('WAKING...');
-    if(window.reacquireMic)await window.reacquireMic();
-    if(asleep===false && recogWanted)vstatus('LISTENING');
-  }
-  window.addEventListener('keydown',(e)=>{
-    if(!asleep)return;
-    if(e.target&&(e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT'))return;   // let typing wake via send() instead
-    wake();
-  });
-  document.body.addEventListener('click',(e)=>{
-    if(!asleep)return;
-    if(e.target&&e.target.closest('#input-bar'))return;   // the input bar has its own wake-on-type path
-    wake();
-  });
 
   sendBtn.addEventListener('click',send);
   input.addEventListener('keydown',(e)=>{
