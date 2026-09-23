@@ -28,6 +28,7 @@ Inbound (client -> server) frames
 
   {"type": "presence", "asleep": true|false}                          sent every few seconds so SKYE never speaks up unprompted while asleep
   {"type": "cancel"}                                                  barge-in: stop speaking the current reply (synthesis halts after the sentence in progress; the turn still ends with a "turn_end")
+  {"type": "voice_event", "kind": "sleep"|"cancel", "text": "..."}   a spoken sleep/cancel command the client handled locally without ever starting a turn — logged to telemetry only, never answered
 
 Every inbound message must be one of the above — there is no bare/unframed
 text input anymore. An "audio" frame gets exactly one "transcript" frame

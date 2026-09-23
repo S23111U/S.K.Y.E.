@@ -406,6 +406,39 @@
       document.getElementById('start-btn').textContent='AUDIO UNAVAILABLE';
     }
   };
+  // Sleep used to leave the microphone hardware open the whole time — only
+  // the JS processing was gated — "so a wake word could be heard". That kept
+  // the OS's input session alive continuously, which on Bluetooth headsets
+  // forces the low-quality call profile (HFP) instead of high-quality music
+  // playback for as long as any track exists, awake or "asleep". Real fix:
+  // going to sleep now actually stops the mic track, releasing the hardware;
+  // waking is by keypress/click (see the classic script) since there is no
+  // longer a live mic to hear "Skye" with while asleep.
+  window.releaseMic = function(){
+    if(window.micStream){ window.micStream.getTracks().forEach(t=>{ try{t.stop();}catch(e){} }); }
+    window.micStream=null;
+    isAudioActive=false;
+    if(window.stopVoice)window.stopVoice();
+  };
+  window.reacquireMic = async function(){
+    try{
+      if(audioContext.state==='suspended')await audioContext.resume();
+      const stream=await navigator.mediaDevices.getUserMedia({audio:{
+        echoCancellation:true, noiseSuppression:true, autoGainControl:true
+      }});
+      window.micStream=stream;
+      if(!analyser){ analyser=audioContext.createAnalyser(); analyser.fftSize=256; dataArray=new Uint8Array(analyser.frequencyBinCount); }
+      audioContext.createMediaStreamSource(stream).connect(analyser);
+      isAudioActive=true;
+      if(window.startVoice)window.startVoice();
+      return true;
+    }catch(e){
+      console.error('reacquireMic failed:', e);
+      if(window.setSkyeText)window.setSkyeText('MIC UNAVAILABLE - CLICK TO RETRY');
+      return false;
+    }
+  };
+
   function getVolume(){
     let v=0;
     if(isAudioActive){
@@ -640,11 +673,10 @@
     const text=input.value.trim();
     if(!text||waiting||ws.readyState!==WebSocket.OPEN)return;
 
-    if(asleep){ asleep=false; vstatus('LISTENING'); }    // typing wakes SKYE
+    if(asleep){ wake(); }    // typing wakes SKYE (re-opens the mic too — see wake())
     if(STOP.test(text)){                                 // "go to sleep" typed, same as spoken
       input.value=''; input.style.height='auto';
-      asleep=true; clearPending(); busyQueue=''; interruptSpeech(); resetVadState();
-      vstatus('SLEEPING - SAY "SKYE"');
+      goToSleep(text);
       return;
     }
     detailPanel.classList.remove('show'); window.canvasOpen=false;
@@ -770,16 +802,10 @@
     }
 
     if(STOP.test(text)){
-      asleep=true;
-      clearPending(); busyQueue='';
-      interruptSpeech();
-      // Ambient noise during sleep (mic stays live by design) must not glue
-      // onto whatever utterance wakes SKYE back up.
-      resetVadState();
-      vstatus('SLEEPING - SAY "SKYE"');
+      goToSleep(text);
       return;
     }
-    if(CANCEL.test(text)){ clearPending(); busyQueue=''; interruptSpeech(); vstatus('CANCELLED'); return; }
+    if(CANCEL.test(text)){ clearPending(); busyQueue=''; interruptSpeech(); logVoiceEvent('cancel',text); vstatus('CANCELLED'); return; }
 
     text=text.replace(WAKE,'').trim();                   // wake word optional
     text=trimFalseStart(text);
@@ -1040,7 +1066,48 @@
   }
 
   window.startVoice=function(){ recogWanted=true; asleep=false; startCapture(); };
-  window.stopVoice=function(){ recogWanted=false; stopCapture(); vstatus('MIC OFF'); };
+  window.stopVoice=function(){ recogWanted=false; stopCapture(); };
+
+  // A sleep/cancel command is deliberately never sent to the model — SKYE
+  // must not speak or act on it — but it was also never reaching the server
+  // at all, so nothing recorded that it had been said. This puts it in the
+  // telemetry log as a no-op, purely for the record.
+  function logVoiceEvent(kind,text){
+    try{ if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'voice_event',kind,text})+'\n'); }catch(e){}
+  }
+
+  // Going to sleep fully releases the microphone (see window.releaseMic in
+  // the module script above) rather than just muting it, so a live mic isn't
+  // sitting open the whole time forcing a Bluetooth headset onto its
+  // low-quality call profile. The trade-off: SKYE can no longer hear "Skye"
+  // to wake itself back up, since there is no mic to hear it with — wake by
+  // pressing any key or clicking anywhere on the page instead.
+  function goToSleep(text){
+    if(text)logVoiceEvent('sleep',text);
+    asleep=true;
+    clearPending(); busyQueue='';
+    interruptSpeech();
+    resetVadState();
+    if(window.releaseMic)window.releaseMic();
+    vstatus('SLEEPING - PRESS ANY KEY OR CLICK TO WAKE');
+  }
+  async function wake(){
+    if(!asleep)return;
+    asleep=false;
+    vstatus('WAKING...');
+    if(window.reacquireMic)await window.reacquireMic();
+    if(asleep===false && recogWanted)vstatus('LISTENING');
+  }
+  window.addEventListener('keydown',(e)=>{
+    if(!asleep)return;
+    if(e.target&&(e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT'))return;   // let typing wake via send() instead
+    wake();
+  });
+  document.body.addEventListener('click',(e)=>{
+    if(!asleep)return;
+    if(e.target&&e.target.closest('#input-bar'))return;   // the input bar has its own wake-on-type path
+    wake();
+  });
 
   sendBtn.addEventListener('click',send);
   input.addEventListener('keydown',(e)=>{

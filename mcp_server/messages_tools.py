@@ -134,7 +134,7 @@ def _rows(sql, params=()):
             return con.execute(sql, params).fetchall()
         finally:
             con.close()
-    except (MessagesError, sqlite3.OperationalError, PermissionError) as e:
+    except (MessagesError, sqlite3.Error, PermissionError, OSError) as e:
         raise MessagesError(str(e))
 
 

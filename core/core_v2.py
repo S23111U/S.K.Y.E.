@@ -860,7 +860,51 @@ def _scheduler_loop():
 # asyncio.run_coroutine_threadsafe(), the standard pattern for exactly this.
 MCP_SERVER_PATH = os.path.join(ROOT, "mcp_server", "server.py")
 TOOL_ROUTES = {}  # tool name -> ClientSession
+TOOL_PARAMS = {}   # tool name -> set of its real argument names (from the tool's own MCP schema)
 TOOL_TIMEOUTS = {"analyze_video": 180}   # Gemini watching a video takes far longer than the default 30 s
+# The model sometimes invents a plausible-but-wrong argument name (app_name
+# instead of name, note_title instead of title...). Rather than fail the
+# whole call, an invented key is mapped to whichever of these canonical names
+# the target tool actually declares.
+ARG_ALIASES = {
+    "name": {"app_name", "app", "site_name"},
+    "title": {"note_title", "task_title", "task", "event_title", "name"},
+    "body": {"content", "note_body", "notes", "message"},
+    "text": {"content", "body", "message"},
+    "target": {"site", "url", "address", "webpage"},
+    "query": {"song", "track", "search", "q", "artist", "title"},
+    "task": {"description", "reminder", "what", "item"},
+    "time": {"when", "at"},
+    "when": {"time", "at", "date"},
+    "duration": {"length"},
+    "which": {"name", "title", "label"},
+    "contact": {"name", "who", "person"},
+    "status": {"state"},
+    "category": {"type"},
+    "period": {"range", "timeframe"},
+}
+
+
+def _normalize_tool_args(tool_name, args):
+    """Renames arguments the model got wrong (see ARG_ALIASES) and drops any
+    that still don't match — a wrong extra key crashing the whole call is a
+    worse outcome than the tool asking a clarifying question over one missing
+    field. Silent no-op for tools whose schema wasn't captured (never seen in
+    testing) or plain-dict args that already look right."""
+    valid = TOOL_PARAMS.get(tool_name)
+    if not valid or not isinstance(args, dict):
+        return args
+    out = {}
+    for k, v in args.items():
+        if k in valid:
+            out[k] = v
+            continue
+        canon = next((c for c, aliases in ARG_ALIASES.items() if c in valid and c not in out and k in aliases), None)
+        if canon:
+            out[canon] = v
+        else:
+            print(f"[tool args] dropping unrecognised {tool_name}({k!r}) — valid args are {sorted(valid)}")
+    return out
 _mcp_loop = None
 _mcp_exit_stack = None
 
@@ -875,6 +919,7 @@ async def _mcp_connect():
     tools = await session.list_tools()
     for t in tools.tools:
         TOOL_ROUTES[t.name] = session
+        TOOL_PARAMS[t.name] = set((getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}).get("properties", {}))
     print(f"[MCP] Connected to local tool server — {len(TOOL_ROUTES)} tools: {', '.join(TOOL_ROUTES)}")
 
 
@@ -962,7 +1007,7 @@ def call_function_safe(name, args):
     if name not in TOOL_ROUTES:
         return f"Apologies, Sir. I lack the tool `{name}`."
     try:
-        result = call_mcp_tool(name, args)
+        result = call_mcp_tool(name, _normalize_tool_args(name, args))
         return result if result is not None else "Executed."
     except Exception as e:
         print(f"\n[Tool Execution Error ({name})]: {e}")
@@ -1790,6 +1835,16 @@ def _handle_client_loop(conn, reader, send_lock):
                     if kind == "cancel":
                         # Barge-in: stop speaking the current reply.
                         state["cancel"].set({k: v for k, v in msg.items() if k != "type"})
+                    elif kind == "voice_event":
+                        # A sleep/cancel command the browser deliberately never
+                        # turns into a real turn (no reply, no tool, no LLM
+                        # call) — it still gets a telemetry row so there is a
+                        # record of it having been said at all.
+                        text = (msg.get("text") or "").strip()
+                        if text:
+                            label = {"sleep": "(went to sleep — no reply, by design)",
+                                     "cancel": "(cancelled — no reply, by design)"}.get(msg.get("kind"), "(no reply, by design)")
+                            save_telemetry(text, label, ["silent_voice_command"], False)
                     elif kind == "presence":
                         PROACTIVE.asleep = bool(msg.get("asleep"))
                     elif kind == "audio":

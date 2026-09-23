@@ -804,8 +804,13 @@ def _messages(fn, *args):
         return fn(*args)
     except messages_tools.MessagesError as e:
         print(f"[messages] {fn.__name__} failed: {e}", file=sys.stderr)
-        return messages_tools.NEED_ACCESS if re.search(r"unable to open|not permitted|authorization|denied", str(e), re.I) \
+        # "file is not a database" is the signature macOS leaves when Full
+        # Disk Access is missing but the file handle still opens.
+        return messages_tools.NEED_ACCESS if re.search(r"unable to open|not permitted|authorization|denied|not a database", str(e), re.I) \
             else "I could not read your messages just now."
+    except Exception as e:
+        print(f"[messages] {fn.__name__} crashed: {e}", file=sys.stderr)
+        return "I could not read your messages just now."
 
 
 @mcp.tool()

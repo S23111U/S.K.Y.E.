@@ -149,7 +149,20 @@ def music_play(query):
     q = (query or "").strip()
     if not q:
         return "What should I play?"
-    out = _osa(_PLAY, q)
+    # "Bohemian Rhapsody by Queen" was searched for as one literal string
+    # against each track's name/artist/album, which no single field ever
+    # contains verbatim, so a real match always came back NONE. Try the title
+    # on its own first — the piece actually likely to appear in a track's
+    # name — and only fall back to the raw phrase (which still works for
+    # "some jazz"-style queries that were never a "song by artist" in the
+    # first place).
+    m = re.match(r"^(?P<title>.+?)\s+by\s+(?P<artist>.+)$", q, re.IGNORECASE)
+    candidates = [m.group("title").strip(), q] if m else [q]
+    out = "NONE"
+    for c in candidates:
+        out = _osa(_PLAY, c)
+        if out != "NONE":
+            break
     if out == "NONE":
         _run(["open", f"music://music.apple.com/search?term={quote(q)}"])
         return f"I could not find {q} in your library, so I opened Apple Music search. Pick it there and it will play."
@@ -236,20 +249,32 @@ def _esc(s):
 
 
 def _html(s):
-    return "".join(f"<div>{_esc(line) or '<br>'}</div>" for line in (s or "").split("\n"))
+    # Notes.app already shows the "name:" property as the note's title (its
+    # own first line) — an explicit <h1> here duplicated it verbatim ("milk"
+    # and "eggs" showed up under the title repeated twice, confirmed live).
+    # A short comma list ("milk, eggs, bread") reads far better as one item
+    # per line than as one dense run-on line, so split on it; a longer,
+    # sentence-like body (has its own punctuation) is left as whole lines.
+    lines = []
+    for line in (s or "").split("\n"):
+        if line.count(",") >= 1 and not re.search(r"[.!?]", line) and len(line) < 200:
+            lines.extend(p.strip() for p in line.split(",") if p.strip())
+        elif line.strip():
+            lines.append(line)
+    return "".join(f"<div>{_esc(line) or '<br>'}</div>" for line in lines) or "<div><br></div>"
 
 
 def create_note(title, body=""):
     title = (title or "").strip()
     if not title:
         return "What should the note be called?"
-    _osa(f'tell application "Notes" to make new note with properties {{name:"{_esc(title)}", body:"<h1>{_esc(title)}</h1>{_html(body)}"}}')
+    _osa(f'tell application "Notes" to make new note with properties {{name:"{_esc(title)}", body:"{_html(body)}"}}')
     return f"Created a note called {title}."
 
 
 def add_to_note(title, text):
     out = _osa(f'''tell application "Notes"
-  set hits to (every note whose name contains "{_esc(title)}" and (name of container) is not "Recently Deleted")
+  set hits to (every note whose name contains "{_esc(title)}")
   if (count of hits) is 0 then return "NONE"
   set n to item 1 of hits
   set body of n to (body of n) & "{_html(text)}"
@@ -260,7 +285,7 @@ end tell''')
 
 def find_notes(query):
     out = _osa(f'''tell application "Notes"
-  set names to name of (every note whose name contains "{_esc(query)}" and (name of container) is not "Recently Deleted")
+  set names to name of (every note whose name contains "{_esc(query)}")
   if (count of names) is 0 then return ""
   set AppleScript's text item delimiters to "|"
   set k to count of names
@@ -275,7 +300,7 @@ end tell''')
 
 def read_note(title):
     out = _osa(f'''tell application "Notes"
-  set hits to (every note whose name contains "{_esc(title)}" and (name of container) is not "Recently Deleted")
+  set hits to (every note whose name contains "{_esc(title)}")
   if (count of hits) is 0 then return "NONE"
   return plaintext of item 1 of hits
 end tell''')

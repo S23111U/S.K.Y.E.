@@ -14,6 +14,7 @@ import re
 
 I = re.IGNORECASE
 _END = r"[\s.!?]*$"
+_LEAD = r"(?:(?:can|could|would)\s+you\s+(?:please\s+)?|please\s+)?"
 
 _APPS = ("index 0", "index zero", "index", "safari", "music", "apple music", "notes", "reminders", "messages",
          "mail", "calendar", "clock", "notion", "system settings", "settings", "finder", "facetime", "maps", "photos")
@@ -74,11 +75,23 @@ _RULES = [
      lambda m: {"action": (f"volume {m.group('v')}" if m.group("v") else (m.group("a") or m.group("a2") or ("previous" if "back" in m.group(0).lower() or "previous" in m.group(0).lower() else "next")).lower())}),
     ("music_play", re.compile(r"^\W*(?:please\s+)?play\s+(?!.*\b(?:youtube|spotify|netflix|game|video)\b)(?:some\s+)?(?P<q>.+?)(?:\s+(?:on|in|using|with)\s+apple music)?" + _END, I), lambda m: {"query": re.sub(r"^(?:something by|songs? by|music by|the song|the album|the artist)\s+", "", m.group("q"), flags=I)}),
 
-    ("open_in_safari", re.compile(r"^\W*(?:please\s+)?(?:open|go to|launch|show me|take me to)\s+(?P<t>.+?)\s+in safari" + _END, I), lambda m: {"target": m.group("t")}),
-    ("open_app", re.compile(r"^\W*(?:please\s+)?(?:open|launch|start|switch to)\s+(?:the\s+)?(?P<a>" + "|".join(re.escape(a) for a in _APPS) + r")(?:\s+app)?" + _END, I), lambda m: {"name": m.group("a")}),
-    ("open_in_safari", re.compile(r"^\W*(?:please\s+)?(?:open|go to)\s+(?P<t>" + "|".join(_SITES) + r"|[\w-]+\.(?:com|org|net|io|edu|au|co)(?:/\S*)?)" + _END, I), lambda m: {"target": m.group("t")}),
+    ("open_in_safari", re.compile(r"^\W*" + _LEAD + r"(?:open|go to|launch|show me|take me to)\s+(?P<t>.+?)\s+in safari" + _END, I), lambda m: {"target": m.group("t")}),
+    ("open_in_safari", re.compile(r"^\W*" + _LEAD + r"open safari (?:and )?search(?:\s+for)?\s+(?P<t>.+?)" + _END, I), lambda m: {"target": m.group("t")}),
+    ("open_in_safari", re.compile(r"^\W*" + _LEAD + r"search(?:\s+for)?\s+(?P<t>.+?)\s+(?:in|on)\s+safari" + _END, I), lambda m: {"target": m.group("t")}),
+    ("open_in_safari", re.compile(r"^\W*" + _LEAD + r"search\s+safari\s+for\s+(?P<t>.+?)" + _END, I), lambda m: {"target": m.group("t")}),
+    ("open_app", re.compile(r"^\W*" + _LEAD + r"(?:open|launch|start|switch to)\s+(?:the\s+)?(?P<a>" + "|".join(re.escape(a) for a in _APPS) + r")(?:\s+app)?" + _END, I), lambda m: {"name": m.group("a")}),
+    ("open_in_safari", re.compile(r"^\W*" + _LEAD + r"(?:open|go to)\s+(?P<t>" + "|".join(_SITES) + r"|[\w-]+\.(?:com|org|net|io|edu|au|co)(?:/\S*)?)" + _END, I), lambda m: {"target": m.group("t")}),
 
-    ("create_note", re.compile(r"\b(?:create|make|start|write|take)\s+(?:me\s+)?(?:a\s+)?(?:new\s+)?note\s*(?:called|named|titled|about|on)?\s*[:,]?\s*(?P<t>.+?)(?:\s+(?:saying|that says|with the text|and write|:)\s+(?P<b>.+?))?" + _END, I), lambda m: {"title": m.group("t"), "body": m.group("b") or ""}),
+    ("add_to_note", re.compile(
+        r"\b(?:add|put|write)\s+(?P<b>.+?)\s+(?:to|in|into)\s+(?:my|the|that)\s+(?:same\s+)?(?P<t>[\w' -]+?)\s+note\b|"
+        r"\bin\s+(?:the|my|that)\s+(?:same\s+)?(?P<t2>[\w' -]+?)\s+note,?\s+add\s+(?P<b2>.+?)" + _END + r"|"
+        r"\bin\s+(?:the|my|that)\s+(?:same\s+)?note\s+(?P<t3>[\w' -]+?),?\s+add\s+(?P<b3>.+?)" + _END, I),
+     lambda m: {"title": (m.group("t") or m.group("t2") or m.group("t3") or "").strip(),
+                "text": (m.group("b") or m.group("b2") or m.group("b3") or "").strip()}),
+    ("create_note", re.compile(
+        r"\b(?:create|make|start|write|take)\s+(?:me\s+)?(?:a\s+)?(?:new\s+)?note\s*(?:called|named|titled|about|on)?\s*[:,]?\s*(?P<t>.+?)"
+        r"(?:\s*(?:,\s*)?(?:saying|that says|with the text|and write|and add|containing|with|:)\s+(?P<b>.+?)(?:\s+to (?:it|the note))?)?" + _END, I),
+     lambda m: {"title": re.sub(r"^[\s,.:;-]+|[\s,.:;-]+$", "", m.group("t")), "body": (m.group("b") or "").strip()}),
 ]
 
 
