@@ -55,6 +55,8 @@ CALL_FUNC: {"name": "tell_time", "arguments": {}}
 
 `core_v2.py` parses that, dispatches to the registered Python function, and feeds the result back into the next turn as a system note. A blocklist rejects anything destructive before dispatch.
 
+Every tool lives in a self-contained package under [`skills/`](skills/README.md) — one skill, one folder, no other file to touch to add a new one. See [`skills/README.md`](skills/README.md) for the plugin contract and a worked example.
+
 ### 3 — Hybrid RAG Memory (3-Layer)
 
 A persistent, hierarchical memory that survives across sessions:
@@ -94,23 +96,37 @@ Phase 2 │ Semantic Ingestion   → ingest_history.py   → indexes logs into m
 jarvis/
 │
 ├── core/
-│   ├── core_v2.py              # Main production engine (Socket Server + CLI)
+│   ├── core_v2.py              # Main production engine (Socket Server + CLI): the conversation loop, streaming, telemetry
 │   ├── protocol.py             # Newline-delimited JSON frames (client <-> server)
 │   ├── stt.py                  # Whisper speech-to-text (MLX): vocabulary hints, noise/hallucination filter, logs/stt_*.jsonl
 │   ├── tts_client.py           # Talks to tts_server/ (Chatterbox Turbo voice)
 │   ├── mood.py                 # Picks a speaking mood per reply
+│   ├── fillers.py               # Backchannel phrases ("let me check that") spoken while a reply generates
+│   ├── confirm.py               # Confirm-before-acting gate for risky tools (hold, read back, "yes"/"no")
+│   ├── text_utils.py            # Raw-output cleanup: sentence splitting, filler/role/repetition detection
+│   ├── guardrails.py             # apply_runtime_guardrails(): applies text_utils' checks to a reply
 │   ├── direct_routes.py        # requests that map straight to a tool (timer, alarm, music, weather...) - no model guessing
 │   ├── proactive.py            # check-ins, task follow-ups, to-do nudges (rules + quiet hours)
-│   ├── einstein.py             # Einstein mode: opt-in deep thinking via Gemini
-│   └── skills.py               # Routes a request to a skill (its tools + UI colour)
+│   └── einstein.py             # Einstein mode: opt-in deep thinking via Gemini
+│
+├── skills/                     # One package per feature — see skills/README.md to add a new one
+│   ├── base.py                  # The Skill dataclass: the plugin contract every skill implements
+│   ├── registry.py               # Discovers every skills/*/ package, routes a message to one, lists all tools for MCP
+│   ├── shared.py                 # Lazy TaskStore/MemoryManager singletons shared by skill implementations
+│   ├── palette.py                 # Derives a full browser UI colour palette from one skill (r,g,b)
+│   ├── routing_helpers.py         # Shared regex fragments used by several skills' direct_routes
+│   ├── notion_client.py           # Shared Notion REST API client (finance/todo/knowledge sit on top of it)
+│   ├── canvas.py                 # Rich on-screen content (charts, agenda, links, media) attached to tool results
+│   ├── finance/                  # Notion expense tracker
+│   ├── todo/                     # Notion to-do list
+│   ├── knowledge/                 # Notion learning notes (courses, lectures, tutorials)
+│   ├── calendar/                  # Google Calendar
+│   ├── mac/                       # Safari, Apple Music, Notes, Reminders, app launching, iMessage (read-only)
+│   ├── core_tools/                # Always-on tools shown every turn: time, weather, alarms, web search, tasks...
+│   └── einstein/                  # Thin routing entry for Einstein mode (core/einstein.py does the work)
 │
 ├── mcp_server/
-│   ├── server.py               # Tool server (MCP): time, weather, alarms, web search, tasks...
-│   ├── notion_tools.py         # Notion: finance tracker, to-do list, learning notes
-│   ├── mac_tools.py            # Safari, Apple Music, Reminders, Notes, app launching
-│   ├── messages_tools.py       # iMessage/SMS, read only
-│   ├── canvas.py               # rich on-screen content (charts, agenda, links, media) attached to tool results
-│   └── calendar_tools.py       # Google Calendar: list, add, move, cancel, free time, undo
+│   └── server.py               # Tool server (MCP): just discovers skills/ and registers their tools — no tools of its own
 │
 ├── tts_server/
 │   └── server.py               # Chatterbox Turbo TTS subprocess (runs in .venv)
@@ -164,7 +180,7 @@ python3 -m venv .venv && .venv/bin/pip install mlx-audio soundfile
 ```
 Override the interpreter with `SKYE_TTS_PYTHON`. The voice is cloned from `assets/reference_voice_short.wav` (a ~13 s slice of `reference_voice.wav`; regenerate it if you change the reference). Optional per-mood clips — `assets/reference_voice_happy.wav`, `_sad.wav`, `_concerned.wav` — are picked up automatically. The first start downloads the model.
 
-**Notion (optional).** Create an internal integration at notion.so/profile/integrations, share your pages with it (`...` → Connections), and put its secret in `.env` as `NOTION_TOKEN`. SKYE finds the finance tracker, to-do list and learning notes by name/shape, so nothing else needs configuring. `python scripts/notion_discovery.py` prints everything the integration can see. Tools are added to the model's menu per request by `core/skills.py` (finance / to-do / knowledge), and each skill recolours the UI.
+**Notion (optional).** Create an internal integration at notion.so/profile/integrations, share your pages with it (`...` → Connections), and put its secret in `.env` as `NOTION_TOKEN`. SKYE finds the finance tracker, to-do list and learning notes by name/shape, so nothing else needs configuring. `python scripts/notion_discovery.py` prints everything the integration can see. Tools are added to the model's menu per request by `skills/registry.py` (the `finance`, `todo` and `knowledge` skills), and each one recolours the UI.
 
 **Google Calendar (optional).** In Google Cloud, enable the Calendar API, create an OAuth *Desktop app* client (add yourself as a test user) and save its JSON as `gcp-oauth.keys.json` in the repo root. Then run `python scripts/google_login.py` once and approve access; the token is kept in `memory/google_token.json` (both files are gitignored).
 

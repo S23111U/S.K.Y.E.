@@ -1,5 +1,10 @@
 """macOS integration: Safari, Apple Music, Reminders, Notes and app launching.
 
+Part of the "mac" skill (see skills/mac/__init__.py) — this module holds the
+actual implementations; @_mac_safe below is what turns an AppleScript/
+permission failure into a spoken sentence instead of a crash, the same job
+mcp_server/server.py's old `_mac()` wrapper did.
+
 Everything goes through `osascript` (AppleScript) or `open`, so nothing extra is
 installed and no model is loaded. The first use of each app makes macOS ask
 "'Terminal' wants to control 'Music'"; approve it once (System Settings >
@@ -9,9 +14,11 @@ saying which permission is missing rather than failing silently.
 Every function returns a sentence ready to be spoken.
 """
 
+import functools
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime, timedelta
 from urllib.parse import quote
 
@@ -30,6 +37,23 @@ APPS = {
 
 class MacError(Exception):
     pass
+
+
+def _mac_safe(fn):
+    """Runs a Mac tool; failures become a spoken sentence."""
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except MacError as e:
+            print(f"[mac] {fn.__name__} failed: {e}", file=sys.stderr)
+            msg = str(e)
+            return ("I need permission first: " + msg.split("permission needed: ", 1)[1] + ".") if msg.startswith("permission needed") \
+                else "I could not do that on the Mac just now."
+        except Exception as e:
+            print(f"[mac] {fn.__name__} crashed: {e}", file=sys.stderr)
+            return "I could not do that on the Mac just now."
+    return wrapped
 
 
 def _osa(script, *args):
@@ -61,7 +85,10 @@ SITES = {"youtube": "https://youtube.com", "google": "https://google.com", "gmai
          "linkedin": "https://linkedin.com", "chatgpt": "https://chatgpt.com", "maps": "https://maps.google.com"}
 
 
+@_mac_safe
 def open_in_safari(target):
+    """Opens a website in Safari. target: a site name ("youtube", "gmail"), an address, or search words."""
+
     t = (target or "").strip().lower().rstrip(".")
     if not t:
         return "What should I open in Safari?"
@@ -75,7 +102,10 @@ def open_in_safari(target):
     return f"Opened {target.strip()} in Safari."
 
 
+@_mac_safe
 def open_app(name):
+    """Opens a Mac app: INDEX 0, Safari, Music, Notes, Reminders, Messages, Mail, Calendar, Clock, Notion, System Settings, FaceTime."""
+
     key = re.sub(r"^(?:the\s+)", "", (name or "").strip().lower())
     app = APPS.get(key)
     if not app:
@@ -87,14 +117,15 @@ def open_app(name):
     return f"Opening {app}."
 
 
+@_mac_safe
 def start_studying():
     """Opens INDEX 0 and suggests what to study, from the to-do list, the notes
     index and the roadmap folder. It only reads names, never the app's content."""
     msg = open_app("index 0")
     ideas = []
     try:
-        import notion_tools
-        todos = [t for t in notion_tools._todos() if t["status"] != "Done"]
+        from skills.todo.tools import todos as get_todos
+        todos = [t for t in get_todos() if t["status"] != "Done"]
         study = [t["name"] for t in todos if re.search(
             r"\b(dsa|comp\d*|info\d*|assignment|tutorial|lecture|revis|study|review|week|exam|quiz|practice|leetcode)\b", t["name"], re.I)]
         ideas += study[:3]
@@ -145,7 +176,10 @@ _PLAY = '''on run argv
 end run'''
 
 
+@_mac_safe
 def music_play(query):
+    """Plays a song, artist or album from the Apple Music library (opens Apple Music search if it is not in the library)."""
+
     q = (query or "").strip()
     if not q:
         return "What should I play?"
@@ -169,7 +203,10 @@ def music_play(query):
     return f"Playing {out}."
 
 
+@_mac_safe
 def music_control(action):
+    """Controls Apple Music: pause, resume, next, previous, or "volume 40"."""
+
     a = (action or "").lower().strip()
     cmd = {"pause": "pause", "stop": "pause", "resume": "play", "play": "play", "continue": "play",
            "next": "next track", "skip": "next track", "previous": "previous track", "back": "previous track"}.get(a)
@@ -185,7 +222,10 @@ def music_control(action):
     return {"pause": "Paused.", "play": "Playing.", "next track": "Next track.", "previous track": "Previous track."}[cmd]
 
 
+@_mac_safe
 def music_now_playing():
+    """Says what is playing in Apple Music."""
+
     out = _osa('tell application "Music" to if player state is playing then return (name of current track) & " by " & (artist of current track)\nreturn "NOTHING"')
     return "Nothing is playing right now." if out == "NOTHING" else f"This is {out}."
 
@@ -199,6 +239,7 @@ def _as_date(var, dt):
             f"set time of {var} to {dt.hour * 3600 + dt.minute * 60}")
 
 
+@_mac_safe
 def add_mac_reminder(title, when=""):
     from memory.tasks import parse_when
     title = (title or "").strip()
@@ -212,10 +253,13 @@ def add_mac_reminder(title, when=""):
     else:
         script = f'tell application "Reminders" to make new reminder with properties {{name:"{_esc(title)}"}}'
     _osa(script)
-    return f"Added {title} to your Reminders" + (f" for {_when_words(dt)}." if dt else ".")
+    return f"Added {title} to your Reminders" + (f" for {when_words(dt)}." if dt else ".")
 
 
+@_mac_safe
 def list_mac_reminders():
+    """Lists open items in the Apple Reminders app."""
+
     out = _osa('''tell application "Reminders"
   set out to {}
   repeat with r in (every reminder whose completed is false)
@@ -231,7 +275,10 @@ end tell''')
     return f"In Reminders you have {_join(items)}."
 
 
+@_mac_safe
 def complete_mac_reminder(title):
+    """Marks an Apple Reminders item as done."""
+
     out = _osa(f'''tell application "Reminders"
   set hits to (every reminder whose completed is false and name contains "{_esc(title)}")
   if (count of hits) is 0 then return "NONE"
@@ -264,7 +311,10 @@ def _html(s):
     return "".join(f"<div>{_esc(line) or '<br>'}</div>" for line in lines) or "<div><br></div>"
 
 
+@_mac_safe
 def create_note(title, body=""):
+    """Creates a note in the Apple Notes app."""
+
     title = (title or "").strip()
     if not title:
         return "What should the note be called?"
@@ -272,7 +322,10 @@ def create_note(title, body=""):
     return f"Created a note called {title}."
 
 
+@_mac_safe
 def add_to_note(title, text):
+    """Appends text to an existing Apple Notes note."""
+
     out = _osa(f'''tell application "Notes"
   set hits to (every note whose name contains "{_esc(title)}")
   if (count of hits) is 0 then return "NONE"
@@ -283,7 +336,10 @@ end tell''')
     return f"I could not find a note called {title}." if out == "NONE" else f"Added that to your note {out}."
 
 
+@_mac_safe
 def find_notes(query):
+    """Finds Apple Notes notes by title."""
+
     out = _osa(f'''tell application "Notes"
   set names to name of (every note whose name contains "{_esc(query)}")
   if (count of names) is 0 then return ""
@@ -298,7 +354,10 @@ end tell''')
     return f"I found {len(items)} note{'s' if len(items) != 1 else ''}: {_join(items)}."
 
 
-def read_note(title):
+@_mac_safe
+def read_apple_note(title):
+    """Reads the start of an Apple Notes note aloud."""
+
     out = _osa(f'''tell application "Notes"
   set hits to (every note whose name contains "{_esc(title)}")
   if (count of hits) is 0 then return "NONE"
@@ -309,7 +368,7 @@ end tell''')
     return re.sub(r"\s+", " ", out)[:700]
 
 
-def _when_words(dt):
+def when_words(dt):
     today = datetime.now().date()
     day = "today" if dt.date() == today else "tomorrow" if dt.date() == today + timedelta(days=1) else dt.strftime("%A")
     return f"{day} at {dt.strftime('%-I:%M %p').replace(':00 ', ' ')}"

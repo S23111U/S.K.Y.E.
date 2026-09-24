@@ -3,8 +3,8 @@ token in memory/google_token.json. Run again if the login ever expires."""
 import os
 import sys
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "mcp_server"))
-import calendar_tools as ct
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from skills.calendar import tools as ct
 from google_auth_oauthlib.flow import InstalledAppFlow
 
 if not os.path.exists(ct.KEYS_FILE):

@@ -1,5 +1,7 @@
 """Read-only access to iMessage / SMS (the Messages app's local database).
 
+Part of the "mac" skill (see skills/mac/__init__.py).
+
 Read only, on purpose: there is no send here. Nothing is copied anywhere; the
 database is opened read-only and only the few most recent rows are returned.
 macOS protects that file, so the app running SKYE (Terminal, VS Code...) needs
@@ -10,9 +12,11 @@ Message text never goes into SKYE's long-term memory (scripts/ingest_history.py
 skips these tools' turns).
 """
 
+import functools
 import os
 import re
 import sqlite3
+import sys
 import subprocess
 import time
 
@@ -25,6 +29,23 @@ NEED_ACCESS = ("I need permission to read Messages. In System Settings, Privacy 
 
 class MessagesError(Exception):
     pass
+
+
+def _messages_safe(fn):
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except MessagesError as e:
+            print(f"[messages] {fn.__name__} failed: {e}", file=sys.stderr)
+            # "file is not a database" is the signature macOS leaves when Full
+            # Disk Access is missing but the file handle still opens.
+            return NEED_ACCESS if re.search(r"unable to open|not permitted|authorization|denied|not a database", str(e), re.I) \
+                else "I could not read your messages just now."
+        except Exception as e:
+            print(f"[messages] {fn.__name__} crashed: {e}", file=sys.stderr)
+            return "I could not read your messages just now."
+    return wrapped
 
 
 def _connect():
@@ -143,6 +164,7 @@ def _snip(text):
     return (t[:SNIPPET_CHARS] + "...") if len(t) > SNIPPET_CHARS else (t or "an attachment")
 
 
+@_messages_safe
 def read_messages(contact="", limit=4):
     limit = max(1, min(int(limit or 4), 6))
     base = ("SELECT m.text, m.attributedBody, m.is_from_me, m.date, h.id FROM message m "
@@ -166,6 +188,7 @@ def read_messages(contact="", limit=4):
     return "Your latest messages. " + ". ".join(parts) + "."
 
 
+@_messages_safe
 def unread_messages():
     rows = _rows("SELECT h.id, COUNT(*) FROM message m LEFT JOIN handle h ON m.handle_id = h.rowid "
                  "WHERE m.is_read = 0 AND m.is_from_me = 0 AND m.associated_message_type = 0 GROUP BY h.id ORDER BY COUNT(*) DESC LIMIT 6")

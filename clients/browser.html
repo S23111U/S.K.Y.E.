@@ -713,12 +713,17 @@
   // on live SpeechRecognition partials; it's unchanged, just triggered once
   // per captured utterance on the transcript the server echoes back (see the
   // "transcript" case in ws.onmessage) instead of continuously.
-  const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski)\b[\s,.!?-]*/i;
+  // "guy" is a real, recurring Whisper mishearing of "Skye" (confirmed from
+  // live testing), not a hypothetical — added alongside the existing
+  // sky/ski allowances for the same reason: missing the wake word breaks
+  // hands-free use entirely, while an occasional false wake from someone
+  // saying "guy" first is a much smaller cost.
+  const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski|guy)\b[\s,.!?-]*/i;
   const CANCEL=/^\s*(?:scratch that|never ?mind|forget it|ignore that|cancel(?: that)?)\s*[.!?]*\s*$/i;
   // Matches the end of an utterance, so "Oh okay, thank you Sky. You can sleep
   // now." works as well as a bare "go to sleep". Anchored at the end and at a
   // clause start, so "how much sleep do I need" or "I can't sleep" do not.
-  const STOP=/(?:^|[.,!?]\s*)(?:(?:i think|i guess|i suppose|okay|ok|so|well|alright|right|and)[\s,]+)*(?:(?:skye|sky)[\s,]*)?(?:(?:you can|you could|you should|please|now|go|just|can|i want you to|i'd like you to|time to|it's time to|i think it's time to|i'm going to|i am going to|i go to|i'll go to)\s+)*(?:stop listening|stop the mic|go to sleep|go to bed|put yourself to sleep|mute yourself|mute|sleep|sleep mode|stand ?by|good ?night|night night|shut down|power down|take a break|rest now|rest)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky))?\s*[.!?]*\s*$/i;
+  const STOP=/(?:^|[.,!?]\s*)(?:(?:i think|i guess|i suppose|okay|ok|so|well|alright|right|and)[\s,]+)*(?:(?:skye|sky|guy)[\s,]*)?(?:(?:you can|you could|you should|please|now|go|just|can|i want you to|i'd like you to|time to|it's time to|i think it's time to|i'm going to|i am going to|i go to|i'll go to)\s+)*(?:stop listening|stop the mic|go to sleep|go to bed|put yourself to sleep|mute yourself|mute|sleep|sleep mode|stand ?by|good ?night|night night|shut down|power down|take a break|rest now|rest)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky|guy))?\s*[.!?]*\s*$/i;
   const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|ooh+|oo+|er+|eh+|huh|huff|hah+|haha+|whew|phew|tsk|psst|wow|yeah|yep|nope|ok|okay|hello|hi|hey|right|so|well)$/i;
   // While asleep the microphone stays live (audio still reaches local
   // Whisper); the only difference is that nothing but the wake word is acted on.

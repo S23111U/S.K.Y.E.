@@ -122,7 +122,13 @@ def transcribe_pcm(pcm_bytes: bytes, sample_rate: int = 16000, dtype: str = "int
         # Stock phrases Whisper emits for near-silence ("Thank you.", "you")
         # are only believed when the audio was actually loud enough to be speech.
         dropped = "stock phrase on quiet audio"
-    elif text.lower().strip(" .") in VOCAB_PROMPT.lower():
+    elif text.lower().strip(" .") in VOCAB_PROMPT.lower() and float(np.sqrt(np.mean(samples ** 2))) < QUIET_RMS:
+        # Same reasoning as the stock-phrase check above: Whisper parroting a
+        # word straight out of its own prompt hint is only a hallucination if
+        # the audio was too quiet to be real speech. Without the RMS check
+        # this dropped every genuine, correctly-recognised "Skye" (the wake
+        # word IS the first word of VOCAB_PROMPT) and one-word command like
+        # "weather" or "budget" as if SKYE had imagined hearing them.
         dropped = "echoed the prompt"
     _log(len(samples) / 16000, text, no_speech, logprob, dropped, time.time() - t0)
     return "" if dropped else text

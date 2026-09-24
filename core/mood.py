@@ -61,7 +61,7 @@ UPSET_CUE = re.compile(
 # ("set an alarm for 7 AM" scored fear 0.50), so they need much more evidence.
 INSTRUCTION_MIN = 0.80
 INSTRUCTION_RE = re.compile(
-    r"^\s*(?:hey\s+)?(?:(?:skye|sky)[\s,]*)?(?:please\s+)?"
+    r"^\s*(?:hey\s+)?(?:(?:skye|sky|guy)[\s,]*)?(?:please\s+)?"
     r"(?:set|open|play|search|look|find|tell|show|list|remind|what|who|when|where|why|how|which|"
     r"can|could|would|do|does|did|is|are|will|should|mention|explain|give)\b",
     re.IGNORECASE,

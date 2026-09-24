@@ -1,21 +1,26 @@
 """Google Calendar tools (primary calendar) for SKYE.
 
+Part of the "calendar" skill (see skills/calendar/__init__.py).
+
 Same shape as notion_tools.py: every function returns a sentence ready to be
 spoken, failures become sentences, and changes are reversible through a small
 undo log (`undo_calendar`). Login is a one-time browser consent done by
 scripts/google_login.py; the token is kept in memory/google_token.json.
 """
 
+import functools
 import json
 import os
 import re
+import sys
 import time
 from datetime import datetime, timedelta
 
-import canvas
 import dateparser
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from skills import canvas
+
+from skills.shared import ROOT
 KEYS_FILE = os.path.join(ROOT, "gcp-oauth.keys.json")
 TOKEN_FILE = os.path.join(ROOT, "memory", "google_token.json")
 UNDO_FILE = os.path.join(ROOT, "memory", "calendar_undo.json")
@@ -29,6 +34,22 @@ _service = None
 
 class CalendarError(Exception):
     pass
+
+
+def _calendar_safe(fn):
+    """Runs a calendar tool; any failure becomes a spoken sentence, not a crash."""
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        if not connected():
+            return "Your calendar is not connected yet. Run the Google login script first."
+        try:
+            return fn(*args, **kwargs)
+        except CalendarError as e:
+            print(f"[calendar] {fn.__name__} failed: {e}", file=sys.stderr)
+            if "login expired" in str(e):
+                return "Your Google login has expired. Run the login script again."
+            return "I could not reach your calendar just now."
+    return wrapped
 
 
 def connected() -> bool:
@@ -208,9 +229,9 @@ def _undo_push(entry):
     json.dump(stack, open(UNDO_FILE, "w"))
 
 
+@_calendar_safe
 def undo_calendar():
-    """Reverses the last calendar change SKYE made: removes an added event,
-    puts a moved one back, or restores a cancelled one."""
+    """Undoes the last calendar change SKYE made: removes an added event, restores a moved or cancelled one."""
     stack = [e for e in _undo_load() if time.time() - e["at"] < UNDO_MAX_AGE_S]
     if not stack:
         return "There is nothing recent to undo on your calendar."
@@ -242,9 +263,9 @@ def _clean_range_word(text):
     return t
 
 
+@_calendar_safe
 def list_events(period="", until=""):
-    """Events for a day, a week, or a span: `period` is the first day and
-    `until` (optional) the last day, inclusive."""
+    """Lists calendar events. period: "today", "tomorrow", "this week", "next week", a weekday or a date. For a span give the first day as period and the last day as until, such as period "today", until "September 30"."""
     p = _clean_range_word(period)
     # a span spoken in one string: "today to september 30", "from monday until friday"
     m = re.split(r"\s+(?:to|till|until|through|and)\s+", p, maxsplit=1)
@@ -278,7 +299,9 @@ def list_events(period="", until=""):
     return canvas.attach(f"{head}: {spoken}{tail}", "Calendar", canvas.agenda(rows))
 
 
+@_calendar_safe
 def next_event():
+    """Tells the next upcoming calendar event."""
     now = _now()
     for ev in _events(now, now + timedelta(days=30))[:5]:
         start, all_day = _start_of(ev)
@@ -293,7 +316,9 @@ def next_event():
     return "You have nothing coming up in the next month."
 
 
+@_calendar_safe
 def add_event(title, when, duration_minutes=""):
+    """Adds an event to the calendar. when: day and time such as "tomorrow at 3pm" or "Friday 10am". duration_minutes optional, default 60."""
     title = (title or "").strip()
     if not title:
         return "What should I call the event?"
@@ -317,7 +342,9 @@ def add_event(title, when, duration_minutes=""):
     return msg
 
 
+@_calendar_safe
 def move_event(title, when):
+    """Moves an existing calendar event to a new day and time."""
     ev = _find(title)
     if not ev:
         return f"I could not find an event called {title}."
@@ -335,7 +362,9 @@ def move_event(title, when):
     return f"Moved {ev.get('summary')} to {_day_word(start)} at {_clock(start)}."
 
 
+@_calendar_safe
 def cancel_event(title, when=""):
+    """Cancels (deletes) a calendar event by its title; when is optional to disambiguate."""
     ev = _find(title, when)
     if not ev:
         return f"I could not find an event called {title}."
@@ -345,8 +374,9 @@ def cancel_event(title, when=""):
     return f"Cancelled {ev.get('summary')} {_day_word(_start_of(ev)[0])}."
 
 
-def find_free_time(day="", minutes=""):
-    """Free gaps between 9 AM and 6 PM on a day that fit the requested length."""
+@_calendar_safe
+def find_free_time(day="today", minutes="60"):
+    """Finds free gaps in the calendar between 9 AM and 6 PM on a day, long enough for the given minutes."""
     start, end, label = _day_range(day or "today") or _day_range("today")
     try:
         need = int(float(minutes)) if str(minutes).strip() else 60
@@ -395,3 +425,14 @@ def due_alerts(lead_minutes=10):
         seen[ev["id"]] = time.time()
     json.dump(seen, open(ALERTED_FILE, "w"))
     return out
+
+
+def event_alerts() -> str:
+    """Internal: announcements for calendar events starting soon (empty when none)."""
+    if not connected():
+        return ""
+    try:
+        return " ".join(due_alerts(10))
+    except Exception as e:
+        print(f"[calendar] alerts failed: {e}", file=sys.stderr)
+        return ""

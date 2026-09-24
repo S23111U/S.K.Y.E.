@@ -32,7 +32,11 @@ from core import tts_client as tts
 from core.mood import MoodClassifier, MOOD_PARAMS
 from core import direct_routes, einstein
 from core.proactive import Proactive
-from core.skills import SKILLS, STICKY_TURNS, manifest_text, route_skill
+from core.guardrails import apply_runtime_guardrails
+from core.text_utils import sanitise_raw, split_sentences
+from core.fillers import FILLERS, FILLER_TOOL_HINTS, TOOL_FILLERS, pick_filler
+from core.confirm import CONFIRM_TOOLS, CONFIRM_TTL_S, NO_ONLY_RE, NO_RE, YES_RE, _PENDING, _describe_action
+from skills.registry import STICKY_TURNS, manifest_text, route_skill, ui_for
 from scripts.ingest_history import ingest_all_logs
 from memory.tasks import format_due
 
@@ -111,124 +115,17 @@ TASKS = TaskStore(ROOT)
 # =========================================================
 # GUARDRAIL CONFIG
 # =========================================================
-MAX_SENTENCES = 8
-MAX_WORDS = 200
-
-STYLE_TOKENS = ["sir", "certainly", "of course", "acknowledged"]
-
-FORBIDDEN_ROLE_TOKENS = [
-    "user:",
-    "assistant:",
-    "system:",
-    "tutor:",
-    "chatran:",
-]
-
-LOW_INFO_PHRASES = [
-    "everything is functioning flawlessly",
-    "absolutely",
-    "that's what i'm here for",
-    "consider it handled",
-    "farewell",
-    "standing by for your directive",
-    "all systems are operational",
-    "right away",
-]
-
-# Intentionally fuzzy to catch hallucinated function calls and broken JSON blocks.
-CALL_FUNC_RE = re.compile(
-    r"CALL_FUNC\w*\s*:.*",
-    re.DOTALL | re.IGNORECASE,
-)
-
-# Catch dangling JSON tail fragments
-JSON_TAIL_RE = re.compile(r"(\s*[{}]\s*:\s*[{}]\s*){1,}", re.IGNORECASE)
-
-# Standalone status/filler phrases that should always be stripped
-ALWAYS_STRIP_PHRASES = [
-    r"operation completed",
-    r"systems? green and stable",
-    r"systems? (?:are )?(?:fully )?operational",
-    r"standing by for your directive",
-    r"everything is functioning flawlessly",
-    r"all systems (?:are )?(?:fully )?online",
-    r"all systems functioning within normal parameters",
-    r"task executed successfully",
-    r"awaiting your next command",
-    r"executing now",
-    r"on it(?:, sir)?",
-    r"as you wish(?:, sir)?",
-]
+# The text-cleanup pipeline itself (split_sentences, sanitise_raw,
+# apply_runtime_guardrails, and everything they're built from) lives in
+# core/text_utils.py and core/guardrails.py — pure functions with no shared
+# engine state, so they're safe to import from anywhere. Only the one regex
+# still used directly in this file (the CALL_FUNC parser, further down) stays
+# here.
 
 # Detect actual execution payloads (both CALL_FUNC and 'Executing function' from older logs)
 CALL_EXEC_PATTERN = re.compile(
     r"(CALL_FUNC|Executing function)\w*\s*[:\-]*\s*(.*)", re.DOTALL | re.IGNORECASE
 )
-
-
-# =========================================================
-# BACKCHANNEL FILLERS
-# =========================================================
-# Real conversation doesn't go silent while the other person thinks — a
-# quick "mm-hmm" or "let me check" fills the gap. LLM generation (plus, for
-# tool calls, the tool's own execution time) takes a second or more with
-# nothing spoken, which reads as a stall rather than a person listening.
-# stream_skye_response() emits a "filler" frame for handle_client() to speak
-# immediately, in a background thread, while the real reply is generated.
-#
-# Placement matters more than the phrases themselves: a coin-flip on every
-# turn produces fillers back-to-back one moment and none for five turns the
-# next, which reads as a tic, not a person. Real backchannel is driven by
-# (a) whether a pause is actually about to happen — a one-word "thanks" gets
-# answered instantly, a real question or a tool call doesn't — and (b) not
-# doing it again right after the last one. Both are checked below before the
-# phrase pool is even chosen.
-# Fillers are chosen by the *user's* mood, so an empathetic beat ("Oh, I'm
-# sorry to hear that.") comes before the answer to bad news, and a pleased one
-# before the answer to good news. Each phrase is spoken in that mood's delivery.
-FILLERS = {
-    "calm": [
-        "Hmm, let me check that.", "One moment.", "Let me look into that.",
-        "Give me a second.", "Let me think.", "Right, one moment.", "Good question.",
-        "Let me see.", "Okay, give me a moment.", "Alright, let me think about that.",
-        "Interesting, one second.", "Sure, let me work that out.", "Hold on a moment.",
-        "Let me have a think.", "Right, let me see.", "Bear with me a second.",
-        "Ooh, let me think.", "Okay, let me pull that together.",
-    ],
-    "happy": [
-        "Oh, wonderful.", "Ah, splendid.", "That's good to hear.", "Oh, lovely.",
-        "Ah, brilliant.", "Oh, nice.", "Ha, great.",
-    ],
-    "sad": [
-        "Oh, I'm sorry to hear that.", "Ah, that's unfortunate.", "Oh dear.",
-        "Oh no, I'm sorry.", "Ah, that sounds hard.", "I'm sorry about that.",
-    ],
-    "concerned": [
-        "Hmm, I understand.", "I see.", "Let me see.", "Hmm, let me look at that.",
-        "Okay, let's have a look.", "Right, I hear you.",
-    ],
-}
-# For requests that will run a tool (weather, calendar, Notion, search...).
-TOOL_FILLERS = [
-    "Let me check that for you.", "Checking now.", "On it.", "One moment, checking.",
-    "Let me look that up.", "Pulling that up now.", "Sure, checking.", "Give me a second to check.",
-]
-# Rough signal that the request will dispatch a tool (and so take longer than
-# a plain conversational reply) — not exhaustive, just enough to pick the
-# right tone of filler.
-FILLER_TOOL_HINTS = (
-    "weather", "news", "alarm", "remind", "search", "time",
-    "open ", "spotify", "youtube", "calendar",
-)
-QUESTION_LEAD_RE = re.compile(
-    r"^\s*(who|what|when|where|why|how|which|whose|is|are|was|were|do|does|did|"
-    r"can|could|would|will|should|has|have)\b",
-    re.IGNORECASE,
-)
-# A remark this short ("thanks", "okay then", "sounds good") gets answered
-# almost instantly — there's no gap for a filler to fill, so one would land
-# after the real reply instead of before it.
-FILLER_MIN_WORDS = 4
 
 # Einstein mode is a switch, not a one-off: saying "Einstein mode" turns it on
 # and it stays on (gold UI) until he says to switch it off.
@@ -241,24 +138,6 @@ WEATHER_CITY_RE = re.compile(
     r"\b(?:in|for|at|of)\s+([A-Za-z][A-Za-z .'-]*(?:,\s*[A-Za-z .'-]+)*?)\s*(?:right now|today|tonight|tomorrow|now|currently|at the moment|like)?\s*[?.!]*\s*$",
     re.IGNORECASE,
 )
-# Actions that must be confirmed before they run (sending, calling, deleting,
-# running commands). The model asks for the tool as usual, but the call is held
-# and read back to him; "yes" runs it, anything else drops it. Tools get added
-# here as they are built; SKYE_CONFIRM_TOOLS=name,name adds more from .env.
-CONFIRM_TOOLS = {t.strip() for t in os.getenv("SKYE_CONFIRM_TOOLS", "").split(",") if t.strip()}
-CONFIRM_TTL_S = 90
-_PENDING = {}
-YES_RE = re.compile(r"^\W*(?:yes|yeah|yep|yup|sure|ok|okay|correct|confirm(?:ed)?|go ahead|do it|send it|please do|that'?s right|affirmative|proceed)\b[\w\s,.!]{0,30}$", re.IGNORECASE)
-NO_RE = re.compile(r"^\W*(?:no|nope|nah|cancel|don'?t|do not|stop|never ?mind|abort|not now|wait)\b", re.IGNORECASE)
-
-NO_ONLY_RE = re.compile(r"^\W*(?:no|nope|nah|cancel(?: that| it)?|never ?mind|not now|don'?t)\W*$", re.IGNORECASE)
-
-
-def _describe_action(name, args):
-    bits = ", ".join(f"{k} {v}" for k, v in (args or {}).items() if v not in ("", None))
-    return f"{name.replace('_', ' ')}" + (f" with {bits}" if bits else "")
-
-
 TIME_RE = re.compile(r"\b(?:what(?:'s| is)? the time|what time is it|what time (?:is it|it is)|current time|tell me the time|time (?:is it )?(?:right )?now)\b", re.IGNORECASE)
 DATE_RE = re.compile(r"\b(?:what(?:'s| is)? (?:the )?(?:date|day)(?: today)?|what day is (?:it|today)|today'?s date|what(?:'s| is) today)\b", re.IGNORECASE)
 # "Clear the conversation": really empties the short-term context. Long-term
@@ -278,135 +157,12 @@ EINSTEIN_FILLER_WORDS = {
     "let", "lets", "let's", "me", "i", "want", "would", "like", "a", "an", "of", "in", "up", "over",
     "genius", "deep", "think", "thinking", "much", "harder", "properly", "better", "more",
 }
-_last_filler = None
-
-
-def pick_filler(user_input: str, mood: str = "calm"):
-    """Returns (phrase, mood) to speak while the real reply is generated, or None.
-
-    Nearly every turn that goes to the LLM has a real pause (1.5-3.5 s), and a
-    listener who says nothing for that long reads as a stall, not a person. So
-    fillers are the rule, not the exception: always for tool requests and for
-    emotional messages (the empathetic beat matters most there), very likely for
-    questions, and often for longer statements. The only brake is not repeating
-    a plain "let me check" filler on consecutive turns.
-    """
-    global _last_filler
-
-    words = user_input.split()
-    lower = user_input.lower()
-    is_tool_like = any(hint in lower for hint in FILLER_TOOL_HINTS)
-    is_question = user_input.rstrip().endswith("?") or bool(QUESTION_LEAD_RE.match(user_input))
-    emotional = mood != "calm"
-
-    # Probabilities (were 1.0 / 1.0 / 0.85 / 0.6, which put a filler on ~89% of
-    # turns in a real session and started to sound like a tic). These give ~68%
-    # on the same session: still highest where the pause is real (tools) or the
-    # beat matters (emotion), and lower for plain statements.
-    if emotional:
-        if len(words) < 2:
-            return None
-        probability = 0.85
-    elif is_tool_like:
-        probability = 0.9
-    elif is_question and len(words) >= 3:
-        probability = 0.7
-    elif len(words) >= FILLER_MIN_WORDS:
-        probability = 0.5
-    else:
-        return None
-
-    if random.random() > probability:
-        return None
-
-    pool = TOOL_FILLERS if (mood == "calm" and is_tool_like) else FILLERS[mood]
-    choices = [f for f in pool if f != _last_filler] or pool
-    _last_filler = random.choice(choices)
-    return _last_filler, mood
-
-
 # =========================================================
-# TEXT UTILITIES & GUARDRAILS
+# CANVAS SPLITTING & WEB-ANSWER SYNTHESIS
 # =========================================================
-def split_sentences(text: str) -> list[str]:
-    return [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
-
-
-def suppress_low_info_phrases(text: str) -> str:
-    for phrase in LOW_INFO_PHRASES:
-        lowered = text.lower()
-        if lowered.count(phrase) > 1:
-            parts = re.split(rf"({re.escape(phrase)})", text, flags=re.IGNORECASE)
-            kept, seen = [], False
-            for part in parts:
-                if part.lower() == phrase.lower():
-                    if not seen:
-                        kept.append(part)
-                        seen = True
-                else:
-                    kept.append(part)
-            text = "".join(kept).strip()
-    return text
-
-
-def strip_status_filler(text: str) -> str:
-    for pattern in ALWAYS_STRIP_PHRASES:
-        text = re.sub(
-            rf"[,.]?\s*{pattern}\s*[,.]?",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
-    text = re.sub(r"\s{2,}", " ", text)
-    # NB: '.' is deliberately absent from the *trailing* class. It is still
-    # stripped from the front. Leaving it here removed the full stop from the
-    # end of every reply.
-    text = re.sub(r"^[\s.,;]+|[\s,;]+$", "", text)
-    return text.strip()
-
-
-def role_integrity_failed(text: str) -> bool:
-    lower = text.lower()
-    if any(tok in lower for tok in FORBIDDEN_ROLE_TOKENS):
-        return True
-    if len(re.findall(r"\b[A-Z][a-z]+:\s", text)) >= 2:
-        return True
-    return False
-
-
-def _normalise_for_comparison(text: str) -> str:
-    result = strip_status_filler(text)
-    for phrase in LOW_INFO_PHRASES:
-        result = re.sub(re.escape(phrase), "", result, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", result).strip().lower()
-
-
-def repetition_detected(text: str, history: list[str]) -> bool:
-    sentences = split_sentences(text)
-    normalised_sentences = [
-        _normalise_for_comparison(s) for s in sentences if _normalise_for_comparison(s)
-    ]
-    if len(normalised_sentences) != len(set(normalised_sentences)):
-        return True
-    norm = _normalise_for_comparison(text)
-    if len(norm) < 20:
-        return False
-    return any(norm == _normalise_for_comparison(prev) for prev in history)
-
-
-def exceeds_verbosity(text: str) -> bool:
-    return len(text.split()) > MAX_WORDS or len(split_sentences(text)) > MAX_SENTENCES
-
-
-def personality_saturated(text: str) -> bool:
-    words = text.lower().split()
-    hits = sum(words.count(tok) for tok in STYLE_TOKENS)
-    return hits / max(len(words), 1) > 0.08
-
-
-# =========================================================
-# RAW OUTPUT SANITISATION
-# =========================================================
+# (Everything else that used to live here — split_sentences, sanitise_raw,
+# apply_runtime_guardrails — moved to core/text_utils.py and core/guardrails.py.
+# What's left needs model/tokenizer/MODEL_LOCK, so it stays in this file.)
 WEB_SOURCES_MARKER = "[WEB SOURCES]"
 CANVAS_MARKER = "\n[CANVAS]"
 
@@ -454,64 +210,7 @@ def synthesize_web_answer(question: str, query: str, sources: str) -> str:
     return sanitise_raw(out.split("<turn|>")[0].strip())
 
 
-def sanitise_raw(text: str) -> str:
-    """
-    Aggressive pre-guardrail cleanup of raw model output.
 
-    Everything removed here was an artefact of the fine-tuned adapter, which is
-    gone. The <draft>/<critique>/<final_answer> strippers went with it; archived
-    logs still contain those tags, so ingest_history.py and proposed_facts.py
-    keep their own handling. The role-leak chain and trailing-stub strippers
-    went too: the persona now handles tone, and both regexes damaged ordinary
-    prose ("The reason: it works." lost its clause, and a persona-sanctioned
-    trailing "Sir" was cut down to a dangling comma).
-    """
-    text = re.sub(r"<\|end\|>|<\|assistant\|>|<unk>|<s>|</s>", "", text)
-    text = CALL_FUNC_RE.sub("", text)
-    text = JSON_TAIL_RE.sub("", text)
-    text = strip_status_filler(text)
-
-    text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r",\s*,", ",", text)
-    text = re.sub(r"\s*,\s*", ", ", text)
-    text = re.sub(r"([\s:;}\]]+)$", "", text)
-    return text.strip()
-
-
-# =========================================================
-# RUNTIME GUARDRAILS
-# =========================================================
-def apply_runtime_guardrails(text: str, history: list[str]):
-    """
-    Hard-coded Python fail-safes on length, tone and repetition.
-
-    Built to compensate for the fine-tune that has since been removed. Which of
-    these can still fire is under review; the caller logs every one that does.
-    """
-    triggered = []
-
-    if role_integrity_failed(text):
-        triggered.append("role_integrity_reset")
-        return "Apologies. I'm SKYE — how may I assist you?", triggered
-
-    if repetition_detected(text, history):
-        triggered.append("repetition_abort")
-        return "Apologies. Let me respond more clearly and concisely.", triggered
-
-    if exceeds_verbosity(text):
-        triggered.append("verbosity_truncate")
-        truncated = " ".join(split_sentences(text)[:MAX_SENTENCES])
-        return truncated, triggered
-
-    if personality_saturated(text):
-        triggered.append("personality_dampen")
-        text = re.sub(r"\b(Sir|sir)\b[, ]*", "", text).strip()
-
-    cleaned = suppress_low_info_phrases(text)
-    if cleaned != text:
-        triggered.append("low_info_suppression")
-
-    return cleaned, triggered
 
 
 # =========================================================
@@ -1241,7 +940,7 @@ def stream_skye_response(user_input: str):
     # overlaps with generation instead of adding to the wait.
     if skill:
         # The browser recolours itself for the skill that is answering.
-        yield frame("skill", skill=skill, ui=SKILLS[skill]["ui"])
+        yield frame("skill", skill=skill, ui=ui_for(skill))
     filler = pick_filler(user_input, user_mood)
     if filler:
         LAST_TURN_TIMING["filler"] = filler[0]
@@ -1492,7 +1191,7 @@ def _einstein_turn(user_input: str, user_mood: str, switched_on: bool = False):
     with no question in that sentence, the previous question is re-answered."""
     global SHARED_MESSAGES, LAST_TOOL_RESULT
     LAST_TOOL_RESULT = ""
-    yield frame("skill", skill="einstein", ui=SKILLS["einstein"]["ui"], lock=bool(_EINSTEIN_ON) or None)
+    yield frame("skill", skill="einstein", ui=ui_for("einstein"), lock=bool(_EINSTEIN_ON) or None)
 
     prev = None
     for m in reversed(SHARED_MESSAGES):
@@ -1559,7 +1258,7 @@ THANKS_RE = re.compile(
 )
 APPROVAL_ONLY_RE = re.compile(
     r"^\W*(?:(?:ok|okay|alright|all right|got it|understood|superb|perfect|brilliant|excellent|awesome|cool|nice|great|"
-    r"fair enough|sounds good)\W*)+(?:(?:skye|sky|sir)\W*)?$",
+    r"fair enough|sounds good)\W*)+(?:(?:skye|sky|guy|sir)\W*)?$",
     re.IGNORECASE,
 )
 # Anything that makes it a request rather than a bare acknowledgement.
