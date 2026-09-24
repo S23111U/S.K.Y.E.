@@ -21,3 +21,16 @@ memory/calendar_undo.json
 memory/proactive_state.json
 memory/routine.json
 memory/calendar_alerted.json
+
+# Generated per-user runtime state (conversation memory, profile facts, task
+# and semantic-search DBs) - same reasoning as the files above: it's produced
+# by running SKYE, not source, and churns on every session, so it doesn't
+# belong in git.
+memory/conversation_state.json
+memory/persistent_profile.json
+memory/tasks.db
+memory/tasks.db-shm
+memory/tasks.db-wal
+memory/semantics.db
+memory/semantics.db-shm
+memory/semantics.db-wal
