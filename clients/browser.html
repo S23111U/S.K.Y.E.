@@ -10,13 +10,18 @@
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
     :root {
-      --primary-color: #cc4400;
-      --secondary-color: #ff6600;
+      --primary-color: #1e88c8;
+      --secondary-color: #4dbdf5;
+      --bg: #050912;
+      --bar-grad: rgba(5,9,18,0.85);
+      --input-text: #d8ecff;
+      --panel-bg: rgba(8,16,30,0.88);
+      --panel-text: #cfe3f5;
       --success: #22c55e;
       --danger: #ef4444;
     }
 
-    body { margin: 0; overflow: hidden; background: #fffbf4; font-family: 'Orbitron', sans-serif; transition: background-color 1s ease; }
+    body { margin: 0; overflow: hidden; background: var(--bg); font-family: 'Orbitron', sans-serif; transition: background-color 1s ease; }
     canvas { display: block; position: absolute; top: 0; left: 0; z-index: 1; }
 
     /* ── Top bar ── */
@@ -24,17 +29,10 @@
       position: absolute; top: 0; left: 0; right: 0; z-index: 20;
       display: flex; align-items: center; justify-content: space-between;
       padding: 18px 28px;
-      background: linear-gradient(to bottom, rgba(255,251,244,0.7) 0%, transparent 100%);
+      background: linear-gradient(to bottom, var(--bar-grad) 0%, transparent 100%);
       backdrop-filter: blur(4px);
     }
     #header-text { color: var(--primary-color); font-size: 18px; letter-spacing: 8px; font-weight: 400; transition: color 1s ease; }
-    #mode-btns { display: flex; gap: 8px; }
-    #mode-btns button {
-      background: none; border: 1px solid currentColor; padding: 5px 12px;
-      font-family: 'Share Tech Mono', monospace; font-size: 11px; cursor: pointer;
-      letter-spacing: 1px; transition: all 0.2s;
-    }
-    #mode-btns button:hover { color: white !important; }
 
     .status-dot { display: flex; align-items: center; gap: 7px; font-family: 'Share Tech Mono', monospace; font-size: 11px; color: var(--primary-color); }
     .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); transition: background 0.4s; }
@@ -77,6 +75,63 @@
     .cursor.active { display: inline-block; }
     @keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
+
+    /* ── Einstein detail panel ── */
+    #detail-panel {
+      position: absolute; top: 72px; bottom: 96px; right: 24px; width: min(480px, 92vw); z-index: 30;
+      display: none; flex-direction: column;
+      background: color-mix(in srgb, var(--primary-color) 6%, var(--panel-bg));
+      border: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+      backdrop-filter: blur(6px);
+    }
+    #detail-panel.show { display: flex; }
+    #detail-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px;
+      font-family: 'Share Tech Mono', monospace; font-size: 12px; letter-spacing: 2px; color: var(--primary-color);
+      border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 25%, transparent); }
+    #detail-close { background: none; border: none; color: var(--primary-color); font-size: 18px; cursor: pointer; }
+    #detail-body { overflow-y: auto; padding: 14px 16px; font-family: 'Inter', sans-serif; font-weight: 400;
+      font-size: 14px; line-height: 1.65; color: var(--panel-text); }
+    #detail-body h3, #detail-body h4 { font-family: 'Orbitron', sans-serif; font-size: 13px; letter-spacing: 2px;
+      color: var(--primary-color); margin: 14px 0 6px; }
+    #detail-body ul { margin: 6px 0 6px 18px; }
+    #detail-body p { margin: 6px 0; }
+    #detail-note { padding: 8px 14px; font-family: 'Share Tech Mono', monospace; font-size: 11px; opacity: 0.6;
+      color: var(--primary-color); border-top: 1px solid color-mix(in srgb, var(--primary-color) 20%, transparent); }
+
+
+    /* ── Dark "Jarvis" theme ── */
+    body::before {
+      content: ''; position: fixed; inset: 0; z-index: 0; pointer-events: none;
+      background:
+        radial-gradient(ellipse at 50% 45%, color-mix(in srgb, var(--primary-color) 22%, transparent), transparent 55%),
+        repeating-linear-gradient(0deg, rgba(255,255,255,0.022) 0 1px, transparent 1px 3px);
+    }
+    /* ── Offline warning ── */
+    #offline-warn { position: fixed; top: 22px; left: 50%; transform: translateX(-50%); z-index: 50; display: none; text-align: center;
+      padding: 12px 26px; font-family: 'Share Tech Mono', monospace; font-size: 13px; letter-spacing: 3px; color: #ffb4b4;
+      background: rgba(60,8,8,0.88); border: 1px solid #ef4444; box-shadow: 0 0 24px rgba(239,68,68,0.35); }
+    #offline-warn.show { display: block; }
+    #offline-warn small { display: block; margin-top: 4px; font-size: 10px; letter-spacing: 2px; opacity: 0.75; }
+    /* ── Canvas blocks ── */
+    #detail-body .cv-block { margin: 0 0 16px; }
+    .cv-title { font-family: 'Share Tech Mono', monospace; font-size: 11px; letter-spacing: 2px; color: var(--primary-color); margin-bottom: 8px; }
+    .cv-bar { display: grid; grid-template-columns: 96px 1fr 84px; align-items: center; gap: 8px; margin: 5px 0; font-size: 12px; }
+    .cv-bar .track { height: 10px; background: color-mix(in srgb, var(--primary-color) 14%, transparent); }
+    .cv-bar .fill { height: 100%; background: linear-gradient(90deg, var(--primary-color), var(--secondary-color)); }
+    .cv-bar .val { text-align: right; font-family: 'Share Tech Mono', monospace; }
+    .cv-agenda { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 13px; }
+    .cv-agenda .t { font-family: 'Share Tech Mono', monospace; color: var(--primary-color); }
+    .cv-link { display: block; padding: 8px 10px; margin: 6px 0; text-decoration: none; color: inherit;
+      border: 1px solid color-mix(in srgb, var(--primary-color) 28%, transparent); }
+    .cv-link:hover { background: color-mix(in srgb, var(--primary-color) 10%, transparent); }
+    .cv-link small { display: block; opacity: 0.6; font-family: 'Share Tech Mono', monospace; font-size: 11px; margin-top: 2px; }
+    #detail-body img, #detail-body video, #detail-body iframe { width: 100%; border: 0; display: block; }
+    #detail-body iframe { aspect-ratio: 16 / 9; }
+    #detail-body audio { width: 100%; }
+    #detail-body table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    #detail-body th, #detail-body td { text-align: left; padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 20%, transparent); }
+    #detail-body .cap { font-size: 12px; opacity: 0.65; margin-top: 4px; }
+
     /* ── QA Display ── */
     #qa-display {
       position: absolute; bottom: 80px; left: 0; right: 0; z-index: 20;
@@ -86,7 +141,7 @@
     }
     .qa-question {
       font-family: 'Share Tech Mono', monospace; font-size: 13px;
-      color: rgba(204,68,0,0.55); letter-spacing: 2px; text-transform: uppercase;
+      color: color-mix(in srgb, var(--primary-color) 55%, transparent); letter-spacing: 2px; text-transform: uppercase;
       animation: fade-up 0.2s ease;
     }
     .qa-question::before { content: '> '; opacity: 0.5; }
@@ -104,19 +159,19 @@
     #input-bar {
       position: absolute; bottom: 0; left: 0; right: 0; z-index: 20;
       display: flex; gap: 8px; padding: 14px 40px 20px; align-items: flex-end;
-      background: linear-gradient(to top, rgba(255,251,244,0.6) 0%, transparent 100%);
+      background: linear-gradient(to top, var(--bar-grad) 0%, transparent 100%);
     }
     #msg-input {
-      flex: 1; background: transparent; border: none; border-bottom: 1px solid rgba(204,68,0,0.35);
-      border-radius: 0; padding: 8px 0; color: #331100;
+      flex: 1; background: transparent; border: none; border-bottom: 1px solid color-mix(in srgb, var(--primary-color) 35%, transparent);
+      border-radius: 0; padding: 8px 0; color: var(--input-text);
       font-family: 'Share Tech Mono', monospace; font-size: 14px; letter-spacing: 2px;
       resize: none; max-height: 60px; outline: none; transition: border-color 0.2s;
       text-transform: uppercase;
     }
     #msg-input:focus { border-bottom-color: var(--primary-color); }
-    #msg-input::placeholder { color: rgba(204,68,0,0.3); }
+    #msg-input::placeholder { color: color-mix(in srgb, var(--primary-color) 30%, transparent); }
     #send-btn {
-      width: 32px; height: 32px; border-radius: 0; border: 1px solid rgba(204,68,0,0.4);
+      width: 32px; height: 32px; border-radius: 0; border: 1px solid color-mix(in srgb, var(--primary-color) 40%, transparent);
       background: transparent; cursor: pointer; flex-shrink: 0;
       display: flex; align-items: center; justify-content: center;
       transition: all 0.2s;
@@ -128,21 +183,9 @@
     #send-btn svg { width: 14px; height: 14px; fill: var(--primary-color); transition: fill 0.2s; }
   </style>
 </head>
-<body>
+<body data-theme="dark">
 
-<!-- Top bar -->
-<div id="top-bar">
-  <div id="header-text">S.K.Y.E.</div>
-  <div id="mode-btns">
-    <button onclick="setMode('default')" style="color:#cc4400;">DEFAULT</button>
-    <button onclick="setMode('health')"  style="color:#cc0000;">HEALTH</button>
-    <button onclick="setMode('knowledge')" style="color:#0044aa;">KNOWLEDGE</button>
-  </div>
-  <div class="status-dot">
-    <div class="dot" id="dot"></div>
-    <span id="status-text" style="font-family:'Share Tech Mono',monospace;font-size:11px;">OFFLINE</span>
-  </div>
-</div>
+<div id="offline-warn" role="alert">SKYE IS OFFLINE<small>The server is not reachable. Reconnecting...</small></div>
 
 <!-- Init button -->
 <button id="start-btn" onclick="initAudio()">INITIALIZE SYSTEMS</button>
@@ -153,6 +196,7 @@
 </div>
 
 <!-- QA Display -->
+<div id="detail-panel"><div id="detail-head"><span id="detail-title">EINSTEIN MODE</span><button id="detail-close" title="Close">×</button></div><div id="detail-body"></div><div id="detail-note"></div></div>
 <div id="qa-display">
   <div class="qa-question" id="qa-q" style="display:none"></div>
   <div class="qa-answer"  id="qa-a" style="display:none"></div>
@@ -171,16 +215,29 @@
 
   // ── PALETTES ──
   const PALETTES = {
-    default:   { primary: new THREE.Color(0xcc4400), secondary: new THREE.Color(0xffaa44), atmosphere: new THREE.Color(0xff8844), cssPrim: '#cc4400', cssSec: '#ff6600', fog: 0xffeedd },
+    default:   { primary: new THREE.Color(0x1e88c8), secondary: new THREE.Color(0x6fcbff), atmosphere: new THREE.Color(0x8fd8ff), cssPrim: '#1e88c8', cssSec: '#4dbdf5', fog: 0xeaf6ff },
     health:    { primary: new THREE.Color(0xcc0000), secondary: new THREE.Color(0xff4444), atmosphere: new THREE.Color(0xff0000), cssPrim: '#cc0000', cssSec: '#ff4444', fog: 0xffdddd },
-    knowledge: { primary: new THREE.Color(0x0044aa), secondary: new THREE.Color(0x0080FF), atmosphere: new THREE.Color(0x8899ff), cssPrim: '#0044aa', cssSec: '#00aaff', fog: 0xeef4ff }
+    knowledge: { primary: new THREE.Color(0xd9640a), secondary: new THREE.Color(0xffa04d), atmosphere: new THREE.Color(0xffc48a), cssPrim: '#d9640a', cssSec: '#ff9a45', fog: 0xfff3e6 },
+    calendar:  { primary: new THREE.Color(0x7b3fc4), secondary: new THREE.Color(0xb98cf0), atmosphere: new THREE.Color(0xd2b3ff), cssPrim: '#7b3fc4', cssSec: '#a878e8', fog: 0xf4ecff },
+    einstein:  { primary: new THREE.Color(0xc99a06), secondary: new THREE.Color(0xffd54a), atmosphere: new THREE.Color(0xffe58a), cssPrim: '#b8860b', cssSec: '#f2b705', fog: 0xfff8df },
+    finance:   { primary: new THREE.Color(0x0a8a4a), secondary: new THREE.Color(0x2ee6a0), atmosphere: new THREE.Color(0x66ffaa), cssPrim: '#0a8a4a', cssSec: '#2ee6a0', fog: 0xeafff2 }
   };
-  let currentTarget = PALETTES.default;
+  const uiTheme = 'dark';
+  let uiMode = 'default';
+  function resolvePalette(name){
+    const base = PALETTES[name] || PALETTES.default;
+    if(uiTheme !== 'dark') return base;
+    // On a dark page the deeper 'primary' would vanish; use the bright tone for lines too.
+    const white = new THREE.Color(0xffffff);
+    return { primary: base.secondary.clone(), secondary: base.secondary.clone().lerp(white, 0.35), atmosphere: base.atmosphere,
+             cssPrim: base.cssSec, cssSec: new THREE.Color(base.cssSec).lerp(white, 0.3).getStyle(), fog: 0x050912 };
+  }
+  let currentTarget = resolvePalette('default');
   const activeMaterials = { primary: [], secondary: [], atmosphere: [] };
 
   // ── THREE SETUP ──
   const scene = new THREE.Scene();
-  scene.fog = new THREE.FogExp2(0xffeedd, 0.02);
+  scene.fog = new THREE.FogExp2(0xeaf6ff, 0.02);
   const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
   camera.position.z = 35;
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -194,12 +251,12 @@
   function getGlowSpriteTex() {
     const c = document.createElement('canvas'); c.width = c.height = 128;
     const ctx = c.getContext('2d'), g = ctx.createRadialGradient(64,64,0,64,64,64);
-    g.addColorStop(0,'rgba(255,255,255,0.85)'); g.addColorStop(1,'rgba(255,255,255,0)');
+    g.addColorStop(0,'rgba(255,255,255,0.85)'); g.addColorStop(0.35,'rgba(255,255,255,0.35)'); g.addColorStop(0.7,'rgba(255,255,255,0.08)'); g.addColorStop(1,'rgba(255,255,255,0)');
     ctx.fillStyle = g; ctx.fillRect(0,0,128,128); return new THREE.CanvasTexture(c);
   }
   const glowMat = new THREE.SpriteMaterial({ map: getGlowSpriteTex(), color: currentTarget.atmosphere, transparent: true, blending: THREE.NormalBlending });
   activeMaterials.atmosphere.push(glowMat);
-  const glowSprite = new THREE.Sprite(glowMat); glowSprite.scale.set(70,70,1); glowSprite.position.z = -10; atmosphereGroup.add(glowSprite);
+  const glowSprite = new THREE.Sprite(glowMat); glowSprite.scale.set(70,70,1); glowSprite.position.z = -10; glowSprite.visible = false; // the soft halo rendered as banded specks
 
   function getCircuitTex() {
     const c = document.createElement('canvas'); c.width = c.height = 256;
@@ -211,7 +268,7 @@
   const shellGroup = new THREE.Group(); galaxy.add(shellGroup);
   function createPlate(r,ps,pl,ts,tl){
     const geo=new THREE.SphereGeometry(r,32,32,ps,pl,ts,tl);
-    const mat=new THREE.MeshBasicMaterial({map:circuitTex,transparent:true,opacity:0.6,side:THREE.DoubleSide,blending:THREE.NormalBlending,depthWrite:false,color:currentTarget.secondary});
+    const mat=new THREE.MeshBasicMaterial({transparent:true,opacity:0.12,side:THREE.DoubleSide,blending:THREE.NormalBlending,depthWrite:false,color:currentTarget.secondary});
     activeMaterials.secondary.push(mat);
     const m=new THREE.Mesh(geo,mat);
     const wm=new THREE.LineBasicMaterial({color:currentTarget.primary,transparent:true,opacity:0.3});
@@ -257,6 +314,22 @@
   createArc(gimbalPivot,gimbalSegments1,15,Math.PI,100,Math.PI/2);
   createArc(gimbalPivot2,gimbalSegments2,15,Math.PI,100,-Math.PI/2);
 
+  // HUD rings: tick marks and a thin circle that spin faster while anyone is speaking.
+  const hudGroup=new THREE.Group(); scene.add(hudGroup);
+  function tickRing(r,n,len,op){
+    const pts=[];
+    for(let i=0;i<n;i++){const a=i/n*Math.PI*2,l=(i%5===0)?len*1.9:len;pts.push(new THREE.Vector3(Math.cos(a)*r,Math.sin(a)*r,0),new THREE.Vector3(Math.cos(a)*(r+l),Math.sin(a)*(r+l),0));}
+    const mat=new THREE.LineBasicMaterial({color:currentTarget.secondary,transparent:true,opacity:op}); activeMaterials.secondary.push(mat);
+    return new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts),mat);
+  }
+  function circleLine(r,op){
+    const pts=[]; for(let i=0;i<=128;i++){const a=i/128*Math.PI*2;pts.push(new THREE.Vector3(Math.cos(a)*r,Math.sin(a)*r,0));}
+    const mat=new THREE.LineBasicMaterial({color:currentTarget.primary,transparent:true,opacity:op}); activeMaterials.primary.push(mat);
+    return new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(pts),mat);
+  }
+  const hudRingA=tickRing(19.5,120,0.5,0.55), hudRingB=tickRing(23,60,0.9,0.32);
+  hudGroup.add(hudRingA,hudRingB,circleLine(18.6,0.4),circleLine(22.4,0.22));
+
   const beamGroup=new THREE.Group(); galaxy.add(beamGroup); const activeBeams=[];
   function genPath(){
     const r1=2,mn=4,mx=12,t1=Math.random()*Math.PI*2,p1e=Math.acos(2*Math.random()-1);
@@ -275,11 +348,14 @@
   function spawnBeam(b){b.geometry.dispose();b.geometry=new THREE.TubeGeometry(genPath(),8,0.06,4,false);b.userData={active:true,life:0,targetLife:40+Math.random()*30};}
 
   // ── PALETTE SWITCH ──
-  window.setMode = function(mode){
-    if(!PALETTES[mode])return;
-    currentTarget=PALETTES[mode];
+  function applyPalette(){
+    currentTarget=resolvePalette(uiMode);
     document.documentElement.style.setProperty('--primary-color',currentTarget.cssPrim);
     document.documentElement.style.setProperty('--secondary-color',currentTarget.cssSec);
+  }
+  window.setMode = function(mode){
+    if(!PALETTES[mode])return;
+    uiMode=mode; applyPalette();
   };
 
   // ── TRANSCRIPT ──
@@ -292,14 +368,50 @@
 
   // ── AUDIO ──
   let audioContext,analyser,dataArray,isAudioActive=false;
+  const MIC_CONSTRAINTS={echoCancellation:true, noiseSuppression:true, autoGainControl:true};
+  // macOS drops a Bluetooth headset (AirPods etc.) out of its high-quality
+  // music-output profile (A2DP) the instant anything captures audio from
+  // THAT SAME device's own microphone, because the low-quality bidirectional
+  // profile (HFP) is the only one that supports simultaneous mic input —
+  // this is what made continuous listening audibly ruin music playback.
+  // A completely separate input device (the laptop's own mic) never touches
+  // that switch, so explicitly picking it — rather than whatever the OS
+  // currently has set as the default input, which can silently be the
+  // headset — keeps the headset in full-quality output the whole time,
+  // with no change to how continuously SKYE listens.
+  async function _pickInputStream(){
+    let stream=await navigator.mediaDevices.getUserMedia({audio:MIC_CONSTRAINTS});
+    try{
+      // Device labels are blank until a permission grant unlocks them for
+      // this origin — the getUserMedia call just above is what does that,
+      // so this enumerate only returns anything useful right after it.
+      const inputs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audioinput');
+      const isWireless=l=>/airpods|bluetooth|beats|buds|headset|headphones|earbuds|bose|jbl|galaxy\s*buds/i.test(l||'');
+      const builtIn=inputs.find(d=>/macbook|built.?in|internal\s*mic/i.test(d.label||''));
+      const current=stream.getAudioTracks()[0];
+      const need=builtIn && !new RegExp(builtIn.label.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'i').test(current?.label||'');
+      if(need || (!builtIn && isWireless(current?.label))){
+        const target=builtIn || inputs.find(d=>!isWireless(d.label));
+        if(target){
+          stream.getTracks().forEach(t=>t.stop());
+          stream=await navigator.mediaDevices.getUserMedia({audio:{...MIC_CONSTRAINTS, deviceId:{exact:target.deviceId}}});
+        }
+      }
+    }catch(e){ console.warn('mic device selection skipped, using the default input:', e); }
+    return stream;
+  }
   window.initAudio=async function(){
     try{
-      // Safari will not speak later unless synthesis is touched during a real
-      // user gesture, so warm it up here on the click, before any await.
-      if(window.primeSpeech)window.primeSpeech();
+      // Web Audio playback (SKYE's replies) also needs a real user gesture to
+      // be unlocked in Safari, so create/resume the shared AudioContext here.
       const AC=window.AudioContext||window.webkitAudioContext; audioContext=new AC();
+      // The voice I/O code (capture/playback) lives in a separate, non-module
+      // <script> tag below, which cannot see this module script's top-level
+      // `let` bindings — expose the ones it needs on `window` explicitly.
+      window.audioContext=audioContext;
       if(audioContext.state==='suspended')await audioContext.resume();
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      const stream=await _pickInputStream();
+      window.micStream=stream;
       analyser=audioContext.createAnalyser(); analyser.fftSize=256;
       audioContext.createMediaStreamSource(stream).connect(analyser);
       dataArray=new Uint8Array(analyser.frequencyBinCount);
@@ -320,15 +432,25 @@
         SecurityError:'Blocked: the page is not in a secure context (use http://localhost, not a LAN IP).'
       }[e.name] || e.message;
       alert('Microphone unavailable ('+e.name+').\n\n'+why+
-            '\n\nNote: this only animates the orb. Voice chat is clients/client.py.');
+            '\n\nYou can still type queries below; voice input/output requires mic access.');
       document.getElementById('start-btn').textContent='AUDIO UNAVAILABLE';
     }
   };
   function getVolume(){
-    if(!isAudioActive)return 0;
-    analyser.getByteFrequencyData(dataArray);
-    let s=0; for(let i=0;i<dataArray.length;i++)s+=dataArray[i];
-    return(s/dataArray.length)/100;
+    let v=0;
+    if(isAudioActive){
+      analyser.getByteFrequencyData(dataArray);
+      let s=0; for(let i=0;i<dataArray.length;i++)s+=dataArray[i];
+      v=(s/dataArray.length)/100;
+    }
+    // SKYE's own voice moves the orb too, not just the microphone.
+    const oa=window.outAnalyser;
+    if(oa){
+      oa.getByteFrequencyData(window.outData);
+      let t=0; for(let i=0;i<window.outData.length;i++)t+=window.outData[i];
+      v=Math.max(v,(t/window.outData.length)/70);
+    }
+    return v;
   }
 
   // ── ANIMATION ──
@@ -353,6 +475,9 @@
     const updateSegs=(segs,off)=>segs.forEach(s=>{let tr=s.userData.radius;const ni=s.userData.index/(s.userData.total-1),mm=Math.pow(Math.sin(ni*Math.PI),10),sp=time*(60+(vol*50)),amp=vol*6,wv=Math.sin(sp-s.userData.index*.5+off);if(mm>.01)tr+=wv*mm*amp;s.userData.currentRadius+=(tr-s.userData.currentRadius)*.2;const r=s.userData.currentRadius;s.position.x=Math.cos(s.userData.midAngle)*(r-s.userData.radius);s.position.y=Math.sin(s.userData.midAngle)*(r-s.userData.radius);});
     updateSegs(gimbalSegments1,0); updateSegs(gimbalSegments2,10);
     activeBeams.forEach(b=>{if(b.userData.active){b.userData.life++;const p=b.userData.life/b.userData.targetLife;b.material.opacity=p<.15?p*6:(1-p)*.8;if(p>=1){b.userData.active=false;b.material.opacity=0;}}else if(Math.random()>.97-vol*.1)spawnBeam(b);});
+    camera.position.x+=((window.canvasOpen?8:0)-camera.position.x)*0.06;   // slide the orb aside for the canvas
+    hudRingA.rotation.z+=0.0016+vol*0.02; hudRingB.rotation.z-=0.0011+vol*0.012;
+    hudGroup.scale.setScalar(1+vol*.05); hudGroup.rotation.x=Math.sin(time*.2)*.08; hudGroup.rotation.y=Math.cos(time*.15)*.08;
     renderer.render(scene,camera);
   }
   window.addEventListener('resize',()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);});
@@ -366,9 +491,22 @@
   const qaA=document.getElementById('qa-a');
   const input=document.getElementById('msg-input');
   const sendBtn=document.getElementById('send-btn');
-  const dot=document.getElementById('dot');
-  const statusT=document.getElementById('status-text');
+  const offlineWarn=document.getElementById('offline-warn');
+  let offlineTimer=null;
   let ws,waiting=false;
+  // turnActive: the server still owes us a turn_end (it is generating or
+  // speaking). dropAudio: we interrupted that turn, so any audio_chunk still
+  // in flight for it must be discarded until its turn_end arrives — without
+  // this the remaining sentences of an interrupted reply played anyway.
+  let turnActive=false, dropAudio=false;
+  let skillMode=false, revertWhenIdle=false, modeLock=null;   // modeLock: Einstein mode stays on until switched off
+  function revertSkillMode(){
+    revertWhenIdle=false;
+    if(skillMode){ skillMode=false; if(window.setMode)window.setMode(modeLock||'default'); }
+  }
+  // Speech that arrives while SKYE is still generating a reply: kept and sent
+  // once that reply's text is done, instead of being discarded.
+  let busyQueue='';
 
   input.addEventListener('input',()=>{
     input.style.height='auto';
@@ -377,10 +515,11 @@
 
   function connect(){
     ws=new WebSocket(WS_URL);
-    ws.onopen=()=>{dot.classList.add('online');statusT.textContent='ONLINE';};
-    ws.onclose=()=>{dot.classList.remove('online');statusT.textContent='OFFLINE';setTimeout(connect,3000);};
+    ws.onopen=()=>{ clearTimeout(offlineTimer); offlineWarn.classList.remove('show'); };
+    ws.onclose=()=>{ clearTimeout(offlineTimer); offlineTimer=setTimeout(()=>offlineWarn.classList.add('show'),1500); setTimeout(connect,3000); };   // a short grace so a quick reconnect does not flash the warning
     ws.onerror=()=>ws.close();
     let streamed='';
+    let suppressProactiveAudio=false;
     ws.onmessage=(e)=>{
       let msg;
       try{msg=JSON.parse(e.data);}catch(err){return;}
@@ -390,6 +529,10 @@
         qaA.style.display='block';
         qaA.className='qa-answer';
         qaA.textContent='';
+        // No resetPlayback() here: the filler phrase is sent just before this
+        // frame, and clearing playback on 'start' cut it off after ~100 ms
+        // (found by driving the page in headless Chromium). Audio from a
+        // previous reply is cleared in send() instead.
         if(window.setSkyeText)window.setSkyeText('RESPONDING');
       }
       else if(msg.type==='token'){
@@ -407,7 +550,54 @@
         waiting=false;
         sendBtn.disabled=false;
         if(window.setSkyeText)window.setSkyeText('');
-        speak(msg.text);
+        if(busyQueue){ const t=busyQueue; busyQueue=''; input.value=t; send(); }
+      }
+      else if(msg.type==='detail'){
+        showDetail(msg.text,msg.note);
+      }
+      else if(msg.type==='canvas'){
+        showCanvas(msg.title,msg.blocks,msg.note);
+      }
+      else if(msg.type==='skill'){
+        // A specialised skill is answering: recolour for it, switch back to
+        // default once SKYE has finished speaking (see revertSkillMode).
+        if(msg.lock===true)modeLock=msg.ui;
+        else if(msg.lock===false)modeLock=null;
+        const ui=(msg.ui==='default'&&modeLock)?modeLock:(msg.ui||'default');
+        if(window.setMode)window.setMode(ui);
+        skillMode=ui!=='default'&&ui!==modeLock;
+        revertWhenIdle=false;
+      }
+      else if(msg.type==='mood'){
+        if(window.setSkyeText)window.setSkyeText('SPEAKING - '+String(msg.mood||'calm').toUpperCase());
+      }
+      else if(msg.type==='audio_chunk'){
+        if(suppressProactiveAudio||dropAudio)return;
+        playAudioChunk(msg.pcm, msg.sample_rate||24000, !!msg.final);
+      }
+      else if(msg.type==='turn_end'){
+        // done already updated the text/UI state; nothing else needed here.
+        suppressProactiveAudio=false;
+        turnActive=false;
+        dropAudio=false;
+        revertWhenIdle=true;
+        if(!speaking)revertSkillMode();
+      }
+      else if(msg.type==='proactive'){
+        // SKYE speaking first — a due task/reminder, not a reply to
+        // anything just sent. While asleep, the user explicitly asked for
+        // quiet, so voice is skipped here (the server's plyer notification,
+        // fired alongside this frame, is the fallback that still reaches
+        // them) rather than teaching the server about client sleep state.
+        if(asleep){ suppressProactiveAudio=true; return; }
+        turnActive=true;
+        qaQ.style.display='none';
+        qaA.style.display='block';
+        qaA.className='qa-answer';
+        qaA.textContent=msg.text;
+      }
+      else if(msg.type==='transcript'){
+        handleTranscript(msg.text||'');
       }
       else if(msg.type==='error'){
         qaA.textContent='[error] '+msg.message;
@@ -423,10 +613,70 @@
     qaA.innerHTML='<span class="typing-dots"><span></span><span></span><span></span></span>';
   }
 
+  // ── Einstein detail panel: the long answer SKYE does not read aloud ──
+  const detailPanel=document.getElementById('detail-panel'), detailBody=document.getElementById('detail-body'), detailNote=document.getElementById('detail-note');
+  document.getElementById('detail-close').onclick=()=>{ detailPanel.classList.remove('show'); window.canvasOpen=false; };
+  function mdLite(t){
+    const esc=t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const inline=x=>x.replace(/\*\*(.+?)\*\*/g,'<b>$1</b>').replace(/`([^`]+)`/g,'<code>$1</code>');
+    let out='',list=false;
+    for(const raw of esc.split('\n')){
+      const line=raw.trim(); let m;
+      if((m=line.match(/^[-*•]\s+(.*)/))||(m=line.match(/^\d+[.)]\s+(.*)/))){ if(!list){out+='<ul>';list=true;} out+='<li>'+inline(m[1])+'</li>'; continue; }
+      if(list){out+='</ul>';list=false;}
+      if((m=line.match(/^#{1,4}\s+(.*)/))) out+='<h3>'+inline(m[1])+'</h3>';
+      else if(line) out+='<p>'+inline(line)+'</p>';
+    }
+    return out+(list?'</ul>':'');
+  }
+  function el(tag,cls,text){ const e=document.createElement(tag); if(cls)e.className=cls; if(text!=null)e.textContent=text; return e; }
+  const httpUrl=u=>/^https?:\/\//i.test(u||'')?u:null;
+  function renderBlock(b){
+    const box=el('div','cv-block');
+    if(b.title)box.appendChild(el('div','cv-title',String(b.title).toUpperCase()));
+    switch(b.type){
+      case 'markdown': { const d=el('div'); d.innerHTML=mdLite(b.text||''); box.appendChild(d); break; }
+      case 'links': (b.items||[]).forEach(it=>{ const u=httpUrl(it.url); if(!u)return;
+        const a=el('a','cv-link',it.title||u); a.href=u; a.target='_blank'; a.rel='noopener noreferrer';
+        if(it.source)a.appendChild(el('small',null,it.source)); box.appendChild(a); }); break;
+      case 'chart': { const vals=(b.values||[]).map(Number), max=Math.max(...vals,1e-9);
+        (b.labels||[]).forEach((lab,i)=>{ const r=el('div','cv-bar'); r.appendChild(el('span',null,lab));
+          const tr=el('div','track'), f=el('div','fill'); f.style.width=Math.max(2,vals[i]/max*100)+'%'; tr.appendChild(f); r.appendChild(tr);
+          r.appendChild(el('span','val',(b.unit==='dollars'?'':'')+vals[i].toLocaleString(undefined,{maximumFractionDigits:2})+(b.unit==='dollars'?' USD':(b.unit?' '+b.unit:''))));
+          box.appendChild(r); }); break; }
+      case 'agenda': { const g=el('div','cv-agenda'); (b.items||[]).forEach(it=>{ g.appendChild(el('span','t',it.time||'')); g.appendChild(el('span',null,it.title||'')); }); box.appendChild(g); break; }
+      case 'table': { const t=el('table'); if(b.headers){const tr=el('tr'); b.headers.forEach(h=>tr.appendChild(el('th',null,h))); t.appendChild(tr);}
+        (b.rows||[]).forEach(r=>{const tr=el('tr'); r.forEach(c=>tr.appendChild(el('td',null,String(c)))); t.appendChild(tr);}); box.appendChild(t); break; }
+      case 'image': { const u=httpUrl(b.url); if(u){ const im=el('img'); im.src=u; im.alt=b.caption||''; box.appendChild(im); if(b.caption)box.appendChild(el('div','cap',b.caption)); } break; }
+      case 'video': { if(b.youtube){ const f=el('iframe'); f.src='https://www.youtube-nocookie.com/embed/'+encodeURIComponent(b.youtube); f.allow='accelerometer; autoplay; encrypted-media; picture-in-picture'; f.allowFullscreen=true; box.appendChild(f); }
+        else { const u=httpUrl(b.url); if(u){ const v=el('video'); v.src=u; v.controls=true; box.appendChild(v); } } break; }
+      case 'audio': { const u=httpUrl(b.url); if(u){ const a=el('audio'); a.src=u; a.controls=true; box.appendChild(a); } break; }
+    }
+    return box;
+  }
+  function showCanvas(title,blocks,note){
+    document.getElementById('detail-title').textContent=(title||'SKYE').toUpperCase();
+    detailBody.textContent='';
+    (blocks||[]).forEach(b=>detailBody.appendChild(renderBlock(b)));
+    detailBody.scrollTop=0;
+    detailNote.textContent=note||''; detailPanel.classList.add('show'); window.canvasOpen=true;
+  }
+  function showDetail(text,note){ showCanvas('EINSTEIN MODE',[{type:'markdown',text:text||''}],note); }
+
+  // Tell the server whether SKYE is asleep, so it never speaks up unprompted while asleep.
+  setInterval(()=>{ try{ if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'presence',asleep:!!asleep})+'\n'); }catch(e){} }, 10000);
+
   function send(){
     const text=input.value.trim();
     if(!text||waiting||ws.readyState!==WebSocket.OPEN)return;
 
+    if(asleep){ asleep=false; vstatus('LISTENING'); }    // typing wakes SKYE
+    if(STOP.test(text)){                                 // "go to sleep" typed, same as spoken
+      input.value=''; input.style.height='auto';
+      goToSleep(text);
+      return;
+    }
+    detailPanel.classList.remove('show'); window.canvasOpen=false;
     // Show question
     qaQ.style.display='block';
     void qaQ.offsetWidth; // re-trigger animation
@@ -438,7 +688,12 @@
     showTyping();
 
     if(window.setSkyeText)window.setSkyeText('PROCESSING...');
-    ws.send(text);
+    // Trailing newline: the server's FrameReader (core/protocol.py) is
+    // NDJSON — it buffers until it sees "\n", so a message without one would
+    // just sit unparsed forever.
+    ws.send(JSON.stringify({type:'text', text})+'\n');
+    stopSpeaking();   // anything still playing belongs to the previous reply
+    turnActive=true; dropAudio=false;
     input.value='';
     input.style.height='auto';
     waiting=true;
@@ -446,67 +701,37 @@
   }
 
   // ── VOICE: speech in, speech out ───────────────────────────────────────
-  // Speech synthesis is on-device. Speech RECOGNITION is not: the browser
-  // streams microphone audio to Apple/Google. Same trade clients/client.py
-  // already made with recognize_google().
+  // Both directions are now fully local: STT (mlx-whisper) and TTS (XTTS-v2)
+  // run server-side on-device, so raw audio never leaves this machine. The
+  // browser's job is just capture (VAD + PCM) and playback (a Web Audio
+  // queue fed by "audio_chunk" frames) — no SpeechRecognition, no
+  // speechSynthesis.
   //
   // The wake word is OPTIONAL: anything you say becomes a query, and saying
   // "Skye" first simply strips it. Background speech is therefore also sent,
-  // so "stop listening" exists as a spoken off switch.
-  const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski)\b[\s,.!?-]*/i;
+  // so "stop listening" exists as a spoken off switch. This logic used to run
+  // on live SpeechRecognition partials; it's unchanged, just triggered once
+  // per captured utterance on the transcript the server echoes back (see the
+  // "transcript" case in ws.onmessage) instead of continuously.
+  // "guy" is a real, recurring Whisper mishearing of "Skye" (confirmed from
+  // live testing), not a hypothetical — added alongside the existing
+  // sky/ski allowances for the same reason: missing the wake word breaks
+  // hands-free use entirely, while an occasional false wake from someone
+  // saying "guy" first is a much smaller cost.
+  const WAKE=/^\s*(?:hey\s+|ok(?:ay)?\s+)?(?:skye|sky|ski|guy)\b[\s,.!?-]*/i;
   const CANCEL=/^\s*(?:scratch that|never ?mind|forget it|ignore that|cancel(?: that)?)\s*[.!?]*\s*$/i;
-  const STOP=/^\s*(?:(?:skye|sky)[\s,]*)?(?:stop listening|stop the mic|go to sleep|mute yourself)\s*[.!?]*\s*$/i;
-  const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|er+|eh+|yeah|yep|ok|okay|hello|hi)$/i;
-  const COMMIT_MS=1400;   // silence after speech before it is sent
-
-  let recog=null,recogWanted=false,speaking=false,asleep=false;
-  let pending='',commitTimer=null,previewOn=false;
-  // While asleep the microphone stays LIVE and audio still reaches Apple; the
-  // only difference is that nothing but the wake word is acted on.
+  // Matches the end of an utterance, so "Oh okay, thank you Sky. You can sleep
+  // now." works as well as a bare "go to sleep". Anchored at the end and at a
+  // clause start, so "how much sleep do I need" or "I can't sleep" do not.
+  const STOP=/(?:^|[.,!?]\s*)(?:(?:i think|i guess|i suppose|okay|ok|so|well|alright|right|and)[\s,]+)*(?:(?:skye|sky|guy)[\s,]*)?(?:(?:you can|you could|you should|please|now|go|just|can|i want you to|i'd like you to|time to|it's time to|i think it's time to|i'm going to|i am going to|i go to|i'll go to)\s+)*(?:stop listening|stop the mic|go to sleep|go to bed|put yourself to sleep|mute yourself|mute|sleep|sleep mode|stand ?by|good ?night|night night|shut down|power down|take a break|rest now|rest)(?:\s+(?:now|for now|please))?(?:[\s,]*(?:skye|sky|guy))?\s*[.!?]*\s*$/i;
+  const FILLER=/^(?:um+|uh+|hm+|mm+|ah+|oh+|ooh+|oo+|er+|eh+|huh|huff|hah+|haha+|whew|phew|tsk|psst|wow|yeah|yep|nope|ok|okay|hello|hi|hey|right|so|well)$/i;
+  // While asleep the microphone stays live (audio still reaches local
+  // Whisper); the only difference is that nothing but the wake word is acted on.
   const WAKE_ONLY=/^(?:wake up|wake|you there|are you there|hello|hey)$/i;
 
+  let recogWanted=false,speaking=false,asleep=false;
+
   function vstatus(t){ if(window.setSkyeText)window.setSkyeText(t); }
-
-  // ---- reply voice: FRIDAY (Iron Man) is Kerry Condon, i.e. Irish, so the
-  // ---- target is an en-IE female voice. Moira is the macOS one. Falls back
-  // ---- to en-GB and then en-US rather than going silent.
-  const VOICE_PREFS=['Moira','Fiona','Siobhan','Karen','Serena','Samantha'];
-  let chosenVoice=null;
-  function pickVoice(){
-    if(!('speechSynthesis' in window))return;
-    const vs=speechSynthesis.getVoices();
-    if(!vs.length)return;                    // populated asynchronously
-    for(const name of VOICE_PREFS){
-      const v=vs.find(x=>x.name===name)||vs.find(x=>x.name.startsWith(name));
-      if(v){ chosenVoice=v; return; }
-    }
-    chosenVoice=vs.find(v=>/^en[-_]IE/i.test(v.lang))
-              ||vs.find(v=>/^en[-_]GB/i.test(v.lang))
-              ||vs.find(v=>/^en[-_]US/i.test(v.lang))
-              ||vs.find(v=>/^en/i.test(v.lang))||null;
-  }
-  if('speechSynthesis' in window){ pickVoice(); speechSynthesis.onvoiceschanged=pickVoice; }
-
-  window.primeSpeech=function(){
-    if(!('speechSynthesis' in window))return;
-    try{ const w=new SpeechSynthesisUtterance(' '); w.volume=0; speechSynthesis.speak(w); }catch(e){}
-    pickVoice();
-  };
-
-  function speak(text){
-    if(!text||!('speechSynthesis' in window))return;
-    // Stop listening first, or the mic hears SKYE and re-triggers on her own voice.
-    speaking=true;
-    if(recog){ try{recog.stop();}catch(e){} }
-    const u=new SpeechSynthesisUtterance(text);
-    if(!chosenVoice)pickVoice();
-    if(chosenVoice)u.voice=chosenVoice;
-    u.lang=(chosenVoice&&chosenVoice.lang)||'en-IE';
-    u.rate=1.08; u.pitch=1.0;
-    const resume=()=>{ speaking=false; if(recogWanted)startRecognition(); };
-    u.onend=resume; u.onerror=resume;
-    try{ speechSynthesis.cancel(); speechSynthesis.speak(u); }catch(e){ resume(); }
-  }
 
   // ---- false-start trimming ----
   // "dynamic vector dynamic array is vector" -> "dynamic array is vector".
@@ -523,88 +748,352 @@
     return cut?w.slice(cut).join(' '):text;
   }
 
-  function showPreview(t){
-    if(asleep)return;              // ambient speech must not fill the input box
-    if(!t&&!previewOn)return;      // never clobber something typed by hand
-    previewOn=!!t;
-    input.value=t;
-    input.style.height='auto';
-    input.style.height=Math.min(input.scrollHeight,60)+'px';
+  // Runs once per VAD-captured utterance, on the transcript the server sends
+  // back for an "audio" frame. Same wake/stop/cancel/filler decisions the old
+  // per-recognition-event commitSpeech() made, just triggered once per
+  // utterance instead of continuously.
+  // ---- endpointing grace: don't commit a half-finished thought ----
+  // The VAD ends an utterance after VAD_SILENCE_MS of quiet, but people pause
+  // mid-sentence to think. Committing at that point sent the first half alone
+  // and (because SKYE was then busy) threw the second half away. So a finished
+  // utterance is held for a moment and merged with whatever comes next; the
+  // hold is longer when it ends on a word that clearly wants a continuation.
+  const HOLD_COMPLETE_MS=1000, HOLD_UNSURE_MS=1800, HOLD_DANGLING_MS=3500;
+  const DANGLING=/(?:\b(?:and|but|because|which|or|if|when|then|the|a|an|of|to|also|so|that|with|for|from|about|in|on|at|by|as|is|are|was|were|my|your|i|i'm|i've|i'll|how|what|why|can|could|would|should|do|does|like|between|than|um+|uh+|er+|hm+)|[,;:\-]|\.{2,}|\u2026)\s*\.?\s*$/i;
+  // Whisper ends a finished thought with . ? or !, and a short fragment without one is probably unfinished.
+  function holdFor(t){
+    if(DANGLING.test(t))return HOLD_DANGLING_MS;
+    const words=t.trim().split(/\s+/).length;
+    return (/[.?!]\s*$/.test(t)&&words>=4)?HOLD_COMPLETE_MS:HOLD_UNSURE_MS;
+  }
+  let pendingText='', holdTimer=null;
+
+  function armHold(){
+    clearTimeout(holdTimer);
+    holdTimer=setTimeout(commitPending, holdFor(pendingText));
+  }
+  // Re-arm after a stretch of input that turned out to be noise / too short.
+  function resumeHold(){ if(pendingText&&!holdTimer)armHold(); }
+  function clearPending(){ clearTimeout(holdTimer); holdTimer=null; pendingText=''; }
+  function commitPending(){
+    holdTimer=null;
+    const t=pendingText; pendingText='';
+    if(!t)return;
+    if(waiting){ busyQueue=busyQueue?busyQueue+' '+t:t; vstatus('QUEUED'); return; }
+    input.value=t; send();
   }
 
-  function scheduleCommit(){
-    if(commitTimer)clearTimeout(commitTimer);
-    commitTimer=setTimeout(commitSpeech,COMMIT_MS);
-  }
+  // Runs once per VAD-captured utterance, on the transcript the server sends
+  // back for an "audio" frame. Same wake/stop/cancel/filler decisions the old
+  // per-recognition-event commitSpeech() made, just triggered once per
+  // utterance instead of continuously.
+  function handleTranscript(rawText){
+    let text=(rawText||'').trim();
+    if(!text){ resumeHold(); return; }
 
-  function commitSpeech(){
-    commitTimer=null;
-    let text=pending.trim();
-    pending=''; showPreview('');
-    if(!text)return;
-
-    // Asleep: ignore everything that is not the wake word.
     if(asleep){
       const m=text.match(WAKE);
       if(!m)return;
       asleep=false;
       vstatus('LISTENING');
       const rest=text.slice(m[0].length).trim();
-      speak('Yes?');
       if(rest&&!WAKE_ONLY.test(rest)&&rest.replace(/[^a-z0-9]/gi,'').length>=3&&!waiting){
-        input.value=trimFalseStart(rest); previewOn=false; send();
+        input.value=trimFalseStart(rest); send();
       }
       return;
     }
 
     if(STOP.test(text)){
-      asleep=true; pending=''; showPreview('');
-      vstatus('SLEEPING - SAY "SKYE"');
+      goToSleep(text);
       return;
     }
-    if(CANCEL.test(text)){ vstatus('CANCELLED'); return; }
+    if(CANCEL.test(text)){ clearPending(); busyQueue=''; interruptSpeech(); logVoiceEvent('cancel',text); vstatus('CANCELLED'); return; }
 
     text=text.replace(WAKE,'').trim();                   // wake word optional
     text=trimFalseStart(text);
     // Drop stray noise and single filler words picked up between sentences.
-    if(text.replace(/[^a-z0-9]/gi,'').length<3)return;
-    if(!/\s/.test(text)&&FILLER.test(text.replace(/[^a-z0-9]/gi,'')))return;
-    if(waiting){ vstatus('BUSY - ONE MOMENT'); return; }
+    if(text.replace(/[^a-z0-9]/gi,'').length<3){ resumeHold(); return; }
+    if(!/\s/.test(text)&&FILLER.test(text.replace(/[^a-z0-9]/gi,''))){ resumeHold(); return; }
 
-    input.value=text; previewOn=false;
-    send();
+    // Whisper closes each fragment with . or ? — drop it when a continuation follows.
+    pendingText=pendingText?pendingText.replace(/[.?!]+\s*$/,'')+' '+text:text;
+    vstatus('LISTENING...');
+    armHold();
   }
 
-  window.startVoice=function(){ recogWanted=true; asleep=false; startRecognition(); };
-  window.stopVoice=function(){ recogWanted=false; if(recog){ try{recog.abort();}catch(e){} } vstatus('MIC OFF'); };
+  // ---- playback: a Web Audio queue fed by "audio_chunk" frames ----
+  // Chunks are scheduled back-to-back via a running start-time cursor so
+  // sentence N+1 begins the instant sentence N ends, without gaps or clicks.
+  let nextStartTime=0, scheduledSources=[];
 
-  function startRecognition(){
-    const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
-    if(!SR){ vstatus('SPEECH RECOGNITION UNSUPPORTED'); recogWanted=false; return; }
-    if(recog){ try{recog.abort();}catch(e){} }
-    recog=new SR();
-    recog.continuous=true;
-    recog.interimResults=true;   // show what is heard, so a misspeak is visible
-    recog.lang='en-IN';          // how YOU speak; the reply voice is separate
-    recog.onresult=(e)=>{
-      let fin='',interim='';
-      for(let i=e.resultIndex;i<e.results.length;i++){
-        const r=e.results[i];
-        if(r.isFinal)fin+=r[0].transcript; else interim+=r[0].transcript;
+  function resetPlayback(){
+    scheduledSources.forEach(s=>{ try{s.stop();}catch(e){} });
+    scheduledSources=[];
+    nextStartTime=0;
+  }
+
+  function stopSpeaking(){
+    speaking=false;
+    resetPlayback();
+  }
+
+  // Stops audio already queued locally AND tells the server to stop
+  // synthesizing the rest of this turn's reply (barge-in, sleep, cancel).
+  function interruptSpeech(info){
+    stopSpeaking();
+    if(turnActive){
+      dropAudio=true;
+      if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(Object.assign({type:'cancel'},info||{}))+'\n');
+    }
+  }
+
+  function outNode(){
+    if(!window.outAnalyser){
+      const g=audioContext.createGain(), a=audioContext.createAnalyser(); a.fftSize=256;
+      g.connect(a); a.connect(audioContext.destination);
+      window.outAnalyser=a; window.outData=new Uint8Array(a.frequencyBinCount); window.outGain=g;
+    }
+    return window.outGain;
+  }
+
+  function playAudioChunk(base64pcm, sampleRate, isFinal){
+    if(!audioContext)return;
+    if(audioContext.state==='suspended')audioContext.resume();
+    const raw=atob(base64pcm);
+    const bytes=new Uint8Array(raw.length);
+    for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+    const floatData=new Float32Array(bytes.buffer);
+    const buffer=audioContext.createBuffer(1, floatData.length, sampleRate||24000);
+    buffer.copyToChannel(floatData,0);
+    const source=audioContext.createBufferSource();
+    source.buffer=buffer;
+    source.connect(outNode());
+    const startAt=Math.max(nextStartTime, audioContext.currentTime);
+    source.start(startAt);
+    nextStartTime=startAt+buffer.duration;
+    scheduledSources.push(source);
+    speaking=true;
+    if(isFinal){
+      source.onended=()=>{
+        speaking=false;
+        if(revertWhenIdle)revertSkillMode();
+        if(recogWanted&&!asleep)vstatus('LISTENING');
+      };
+    }
+  }
+
+  // ---- capture: energy-based VAD + raw PCM, no SpeechRecognition ----
+  // SpeechRecognition streams mic audio to Apple/Google even if you never
+  // look at its transcript, so it can't be kept around just for its
+  // endpointing signal — genuinely local/private STT means detecting
+  // speech/silence ourselves. Uses ScriptProcessorNode (deprecated but
+  // simple and universally supported) rather than an AudioWorklet module,
+  // taps the same getUserMedia stream initAudio() already opened, and
+  // outputs to a zero-gain node so raw mic input is never actually heard.
+  // micStream is set on `window` by initAudio() in the module script above
+  // (module scripts don't share top-level bindings with classic scripts);
+  // referencing it here as a bare identifier resolves via the global object.
+  let captureProcessor=null;
+  let utteranceChunks=[], vadActive=false, vadSilenceStartMs=null;
+  let vadCandidateChunks=[], vadCandidateBlocks=0, lastSpeechRms=0;
+  const VAD_ENERGY_THRESHOLD=0.022;   // floor; the live threshold also follows the room noise (below)
+  const VAD_SILENCE_MS=1100;          // quiet needed to end an utterance (was 800: cut people off mid-thought)
+  const VAD_MIN_UTTERANCE_MS=450;     // shorter than this is a click/cough, not speech
+  // Room noise tracker: the speech threshold is at least this many times the
+  // recent ambient level, so a noisy room (fan, keyboard) stops triggering.
+  let noiseFloor=0.006;
+  const NOISE_MULT=3.5;
+  // At start-up the floor is only a guess, and the browser's own auto-gain is
+  // still settling, which is why the first minutes felt worse. Measure the room
+  // for the first ~1.5 s (median, so a cough doesn't skew it).
+  let calibrating=true, calibLevels=[];
+  const CALIB_BLOCKS=35;
+  // A single loud block shouldn't cut SKYE off or start capturing — a
+  // momentary echo leak (before acoustic echo cancellation converges, right
+  // at the start of a session) or a click/cough looks identical to speech
+  // for one block. Require this many consecutive speech-classified blocks
+  // (~130-150ms at a 2048-sample block size) before committing.
+  const VAD_CONFIRM_BLOCKS=6;   // ~250 ms of sustained sound: a mouse click or key tap is over in a fraction of that
+  // While SKYE itself is speaking, its own voice can leak back into the mic
+  // even with echoCancellation on. That looked like the user talking and
+  // cancelled the reply (and the short filler phrase, ~150 ms in). So an
+  // interruption over SKYE's voice needs a louder, longer signal than starting
+  // a fresh utterance. Each cancel reports its level to the server's
+  // telemetry (cancel_info in logs/timing_*.jsonl) so these can be tuned.
+  const VAD_BARGE_ENERGY=0.045;
+  const VAD_BARGE_CONFIRM_BLOCKS=6;
+  // Without a hard cap, an utterance that never gets a full silence gap
+  // (e.g. background noise during "asleep", where the mic stays live by
+  // design) accumulates forever and corrupts whatever comes next. Force a
+  // flush well before this becomes a problem.
+  const VAD_MAX_UTTERANCE_MS=15000;
+
+  function resetVadState(){
+    vadActive=false; utteranceChunks=[]; vadSilenceStartMs=null;
+    vadCandidateChunks=[]; vadCandidateBlocks=0;
+  }
+
+  function rms(data){
+    let sum=0; for(let i=0;i<data.length;i++)sum+=data[i]*data[i];
+    return Math.sqrt(sum/data.length);
+  }
+
+  function downsampleTo16k(samples, origRate){
+    if(origRate===16000)return samples;
+    const ratio=origRate/16000;
+    const newLen=Math.floor(samples.length/ratio);
+    const result=new Float32Array(newLen);
+    for(let i=0;i<newLen;i++){
+      const srcIdx=i*ratio;
+      const i0=Math.floor(srcIdx), i1=Math.min(i0+1, samples.length-1);
+      const frac=srcIdx-i0;
+      result[i]=samples[i0]*(1-frac)+samples[i1]*frac;
+    }
+    return result;
+  }
+
+  function floatTo16BitPCM(samples){
+    const out=new Int16Array(samples.length);
+    for(let i=0;i<samples.length;i++){
+      const s=Math.max(-1,Math.min(1,samples[i]));
+      out[i]=s<0?s*0x8000:s*0x7FFF;
+    }
+    return out;
+  }
+
+  function arrayBufferToBase64(buf){
+    let binary='';
+    const bytes=new Uint8Array(buf);
+    const chunkSize=0x8000;
+    for(let i=0;i<bytes.length;i+=chunkSize){
+      binary+=String.fromCharCode.apply(null, bytes.subarray(i,i+chunkSize));
+    }
+    return btoa(binary);
+  }
+
+  function finishUtterance(){
+    const chunks=utteranceChunks;
+    resetVadState();
+    if(!chunks.length)return;
+    const totalLen=chunks.reduce((a,c)=>a+c.length,0);
+    const durMs=totalLen/audioContext.sampleRate*1000;
+    if(durMs<VAD_MIN_UTTERANCE_MS){ resumeHold(); return; }   // too short, almost certainly noise
+
+    const merged=new Float32Array(totalLen);
+    let off=0; for(const c of chunks){ merged.set(c,off); off+=c.length; }
+    const pcm16k=downsampleTo16k(merged, audioContext.sampleRate);
+    const int16=floatTo16BitPCM(pcm16k);
+    const b64=arrayBufferToBase64(int16.buffer);
+    if(ws&&ws.readyState===WebSocket.OPEN){
+      ws.send(JSON.stringify({type:'audio', pcm:b64, sample_rate:16000})+'\n');
+    }
+    if(!waiting)vstatus('PROCESSING...');
+  }
+
+  function handleAudioBlock(data){
+    const level=rms(data);
+    if(calibrating){
+      calibLevels.push(level);
+      if(calibLevels.length>=CALIB_BLOCKS){
+        calibLevels.sort((a,b)=>a-b);
+        noiseFloor=Math.min(0.02,Math.max(0.003,calibLevels[Math.floor(calibLevels.length/2)]));
+        calibrating=false;
       }
-      if(fin)pending=(pending?pending+' ':'')+fin.trim();
-      showPreview(((pending?pending+' ':'')+interim.trim()).trim());
-      scheduleCommit();
-    };
-    recog.onerror=(e)=>{
-      console.warn('recognition error:',e.error);
-      if(e.error==='not-allowed'||e.error==='service-not-allowed'){
-        recogWanted=false; vstatus('SPEECH RECOGNITION BLOCKED');
+      if(level>0.08)calibrating=false;   // he is already talking: keep the default floor
+    }
+    const overSkye=speaking&&!vadActive;   // could be an echo of SKYE's own voice
+    const startThreshold=Math.max(VAD_ENERGY_THRESHOLD, noiseFloor*NOISE_MULT);
+    const isSpeech=level>(overSkye?Math.max(VAD_BARGE_ENERGY,startThreshold):(vadActive?startThreshold*0.7:startThreshold));
+    const needBlocks=overSkye?VAD_BARGE_CONFIRM_BLOCKS:VAD_CONFIRM_BLOCKS;
+    if(isSpeech)lastSpeechRms=Math.max(lastSpeechRms,level);
+    if(isSpeech){
+      if(!vadActive){
+        // Not yet a confirmed utterance — buffer as a candidate so the
+        // opening of the word isn't lost, but don't commit (and don't barge
+        // in) until speech has actually been sustained for a few blocks.
+        vadCandidateChunks.push(new Float32Array(data));
+        vadCandidateBlocks++;
+        if(vadCandidateBlocks>=needBlocks){
+          // Barge-in: speech sustained while SKYE is talking means the user
+          // is taking the floor, not a momentary echo leak (the
+          // getUserMedia echoCancellation constraint handles the acoustic
+          // side, but needs a moment to converge at the start of a session).
+          if(speaking||turnActive){ interruptSpeech({reason:'barge-in', rms:+lastSpeechRms.toFixed(3), speaking:speaking, overSkye:overSkye}); vstatus('LISTENING'); }
+          if(holdTimer){ clearTimeout(holdTimer); holdTimer=null; }   // user is continuing: keep waiting
+          vadActive=true;
+          utteranceChunks=vadCandidateChunks;
+          vadCandidateChunks=[]; vadCandidateBlocks=0;
+          vstatus('LISTENING...');
+        }
+      } else {
+        utteranceChunks.push(new Float32Array(data));
       }
-    };
-    // Recognition self-terminates on silence; restart unless SKYE is talking.
-    recog.onend=()=>{ if(recogWanted&&!speaking){ try{recog.start();}catch(e){} } };
-    try{ recog.start(); vstatus('LISTENING'); }catch(e){ console.warn(e); }
+      vadSilenceStartMs=null;
+    } else {
+      lastSpeechRms=0;
+      vadCandidateChunks=[]; vadCandidateBlocks=0;   // candidate run broken by silence
+      if(!speaking)noiseFloor=Math.min(0.02, noiseFloor*0.97+level*0.03);   // learn the room, never SKYE's own voice
+      if(vadActive){
+        if(vadSilenceStartMs===null)vadSilenceStartMs=performance.now();
+        utteranceChunks.push(new Float32Array(data));   // keep trailing silence for natural cadence
+        if(performance.now()-vadSilenceStartMs>=VAD_SILENCE_MS)finishUtterance();
+      }
+    }
+    if(vadActive){
+      const durMs=utteranceChunks.reduce((a,c)=>a+c.length,0)/audioContext.sampleRate*1000;
+      if(durMs>=VAD_MAX_UTTERANCE_MS)finishUtterance();
+    }
+  }
+
+  function startCapture(){
+    if(!audioContext||!micStream)return;
+    const src=audioContext.createMediaStreamSource(micStream);
+    captureProcessor=audioContext.createScriptProcessor(2048,1,1);
+    const silentGain=audioContext.createGain();
+    silentGain.gain.value=0;
+    src.connect(captureProcessor);
+    captureProcessor.connect(silentGain);
+    silentGain.connect(audioContext.destination);
+    captureProcessor.onaudioprocess=(e)=>handleAudioBlock(e.inputBuffer.getChannelData(0));
+    vstatus('LISTENING');
+  }
+
+  function stopCapture(){
+    if(captureProcessor){
+      captureProcessor.onaudioprocess=null;
+      try{ captureProcessor.disconnect(); }catch(e){}
+      captureProcessor=null;
+    }
+    resetVadState();
+  }
+
+  window.startVoice=function(){ recogWanted=true; asleep=false; startCapture(); };
+  window.stopVoice=function(){ recogWanted=false; stopCapture(); };
+
+  // A sleep/cancel command is deliberately never sent to the model — SKYE
+  // must not speak or act on it — but it was also never reaching the server
+  // at all, so nothing recorded that it had been said. This puts it in the
+  // telemetry log as a no-op, purely for the record.
+  function logVoiceEvent(kind,text){
+    try{ if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'voice_event',kind,text})+'\n'); }catch(e){}
+  }
+
+  // Sleep only gates processing — the mic itself stays open the whole time so
+  // "Skye" can wake it back up hands-free, same as before. Fully releasing
+  // the mic on sleep (an earlier attempt) traded that away for a keypress/
+  // click to wake, which defeats the point of a voice assistant; it's been
+  // dropped. What actually stops a Bluetooth headset's mic use from forcing
+  // its low-quality call profile onto simultaneous music playback is instead
+  // handled once, in initAudio() above: the capture explicitly targets the
+  // Mac's built-in microphone rather than the headset's, so the headset's
+  // *output* side never has to share the connection with an input session.
+  function goToSleep(text){
+    if(text)logVoiceEvent('sleep',text);
+    asleep=true;
+    clearPending(); busyQueue='';
+    interruptSpeech();
+    resetVadState();
+    vstatus('SLEEPING - SAY "SKYE"');
   }
 
   sendBtn.addEventListener('click',send);

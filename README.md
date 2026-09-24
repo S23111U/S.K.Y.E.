@@ -9,14 +9,14 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=flat-square&logo=python)](https://python.org)
 [![MLX](https://img.shields.io/badge/MLX-Apple%20Silicon-000000?style=flat-square&logo=apple)](https://github.com/ml-explore/mlx)
-[![Llama-3](https://img.shields.io/badge/Model-Llama--3%208B-purple?style=flat-square)](https://huggingface.co/mlx-community/Meta-Llama-3-8B-Instruct-4bit)
+[![Gemma-4](https://img.shields.io/badge/Model-Gemma--4%20E4B-purple?style=flat-square)](https://huggingface.co/mlx-community/gemma-4-e4b-it-4bit)
 [![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
 </div>
 
 ---
 
-S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine built on **Meta Llama-3 8B** that remembers everything you discuss, calls real tools, and holds a consistent personality — all without sending a single byte of data to the cloud.
+S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine built on **Google Gemma 4 E4B** that remembers everything you discuss, calls real tools, and holds a consistent personality — all without sending a single byte of data to the cloud.
 
 ---
 
@@ -24,7 +24,7 @@ S.K.Y.E. is not a chatbot wrapper. It is a locally-running intelligence engine b
 
 | Capability | Status |
 |---|---|
-| 🔍 Web Search (Wikipedia + Gemini fallback) | ✅ Live |
+| 🔍 Web Search (Tavily, feeds long-term memory) | ✅ Live |
 | 🌤️ Live Weather | ✅ Live |
 | 📰 News Summarisation | ✅ Live |
 | ⏰ Alarms & Reminders | ✅ Live |
@@ -54,6 +54,8 @@ CALL_FUNC: {"name": "tell_time", "arguments": {}}
 ```
 
 `core_v2.py` parses that, dispatches to the registered Python function, and feeds the result back into the next turn as a system note. A blocklist rejects anything destructive before dispatch.
+
+Every tool lives in a self-contained package under [`skills/`](skills/README.md) — one skill, one folder, no other file to touch to add a new one. See [`skills/README.md`](skills/README.md) for the plugin contract and a worked example.
 
 ### 3 — Hybrid RAG Memory (3-Layer)
 
@@ -94,7 +96,40 @@ Phase 2 │ Semantic Ingestion   → ingest_history.py   → indexes logs into m
 jarvis/
 │
 ├── core/
-│   └── core_v2.py              # Main production engine (Socket Server + CLI)
+│   ├── core_v2.py              # Main production engine (Socket Server + CLI): the conversation loop, streaming, telemetry
+│   ├── protocol.py             # Newline-delimited JSON frames (client <-> server)
+│   ├── stt.py                  # Whisper speech-to-text (MLX): vocabulary hints, noise/hallucination filter, logs/stt_*.jsonl
+│   ├── tts_client.py           # Talks to tts_server/ (Chatterbox Turbo voice)
+│   ├── mood.py                 # Picks a speaking mood per reply
+│   ├── fillers.py               # Backchannel phrases ("let me check that") spoken while a reply generates
+│   ├── confirm.py               # Confirm-before-acting gate for risky tools (hold, read back, "yes"/"no")
+│   ├── text_utils.py            # Raw-output cleanup: sentence splitting, filler/role/repetition detection
+│   ├── guardrails.py             # apply_runtime_guardrails(): applies text_utils' checks to a reply
+│   ├── direct_routes.py        # requests that map straight to a tool (timer, alarm, music, weather...) - no model guessing
+│   ├── proactive.py            # check-ins, task follow-ups, to-do nudges (rules + quiet hours)
+│   └── einstein.py             # Einstein mode: opt-in deep thinking via Gemini
+│
+├── skills/                     # One package per feature — see skills/README.md to add a new one
+│   ├── base.py                  # The Skill dataclass: the plugin contract every skill implements
+│   ├── registry.py               # Discovers every skills/*/ package, routes a message to one, lists all tools for MCP
+│   ├── shared.py                 # Lazy TaskStore/MemoryManager singletons shared by skill implementations
+│   ├── palette.py                 # Derives a full browser UI colour palette from one skill (r,g,b)
+│   ├── routing_helpers.py         # Shared regex fragments used by several skills' direct_routes
+│   ├── notion_client.py           # Shared Notion REST API client (finance/todo/knowledge sit on top of it)
+│   ├── canvas.py                 # Rich on-screen content (charts, agenda, links, media) attached to tool results
+│   ├── finance/                  # Notion expense tracker
+│   ├── todo/                     # Notion to-do list
+│   ├── knowledge/                 # Notion learning notes (courses, lectures, tutorials)
+│   ├── calendar/                  # Google Calendar
+│   ├── mac/                       # Safari, Apple Music, Notes, Reminders, app launching, iMessage (read-only)
+│   ├── core_tools/                # Always-on tools shown every turn: time, weather, alarms, web search, tasks...
+│   └── einstein/                  # Thin routing entry for Einstein mode (core/einstein.py does the work)
+│
+├── mcp_server/
+│   └── server.py               # Tool server (MCP): just discovers skills/ and registers their tools — no tools of its own
+│
+├── tts_server/
+│   └── server.py               # Chatterbox Turbo TTS subprocess (runs in .venv)
 │
 ├── prompts/
 │   └── skye_persona.txt        # The personality. Loaded as the system message.
@@ -115,7 +150,6 @@ jarvis/
 │   ├── browser.py              # HTTP + WebSocket bridge to the socket server
 │   └── browser.html            # Browser UI
 │
-├── helper_functions/           # Tool implementations (weather, news, alarms...)
 └── logs/                       # Session telemetry JSONL files (gitignored)
 ```
 
@@ -137,8 +171,20 @@ pyenv shell jarvis-py311
 
 ### 2. Install Dependencies
 ```bash
-pip install mlx mlx-lm sentence-transformers numpy scikit-learn wikipedia google-generativeai python-dotenv
+pip install mlx mlx-lm sentence-transformers numpy scikit-learn tavily-python google-generativeai python-dotenv google-auth-oauthlib google-api-python-client dateparser
 ```
+
+**Voice (TTS) runs in its own environment.** Chatterbox Turbo (via `mlx-audio`) needs a newer `mlx` than the LLM's pinned runtime, so `tts_server/` is spawned as a subprocess using the repo's `.venv`:
+```bash
+python3 -m venv .venv && .venv/bin/pip install mlx-audio soundfile
+```
+Override the interpreter with `SKYE_TTS_PYTHON`. The voice is cloned from `assets/reference_voice_short.wav` (a ~13 s slice of `reference_voice.wav`; regenerate it if you change the reference). Optional per-mood clips — `assets/reference_voice_happy.wav`, `_sad.wav`, `_concerned.wav` — are picked up automatically. The first start downloads the model.
+
+**Notion (optional).** Create an internal integration at notion.so/profile/integrations, share your pages with it (`...` → Connections), and put its secret in `.env` as `NOTION_TOKEN`. SKYE finds the finance tracker, to-do list and learning notes by name/shape, so nothing else needs configuring. `python scripts/notion_discovery.py` prints everything the integration can see. Tools are added to the model's menu per request by `skills/registry.py` (the `finance`, `todo` and `knowledge` skills), and each one recolours the UI.
+
+**Google Calendar (optional).** In Google Cloud, enable the Calendar API, create an OAuth *Desktop app* client (add yourself as a test user) and save its JSON as `gcp-oauth.keys.json` in the repo root. Then run `python scripts/google_login.py` once and approve access; the token is kept in `memory/google_token.json` (both files are gitignored).
+
+**Einstein mode (optional, sends data to Google).** Say "Einstein mode" (with a question, or on its own to redo the last answer deeply) to switch it on; it stays on (gold UI) until you say "switch Einstein mode off". Only that question plus a short background note (study areas from your profile, your previous question) goes to Gemini with extended thinking; SKYE speaks a summary and the full answer appears in a gold panel. Needs `GOOGLE_API_KEY` in `.env`. `EINSTEIN_CONTEXT=off` sends the question alone; `EINSTEIN_MODELS` sets the fallback order.
 
 ### 3. Configure Environment
 Create a `.env` file in the project root:
@@ -170,7 +216,7 @@ python scripts/nightly_agi_cron.py
 
 | Component | Technology |
 |---|---|
-| **Base LLM** | `mlx-community/Meta-Llama-3-8B-Instruct-4bit` (stock, no adapters) |
+| **Base LLM** | `mlx-community/gemma-4-e4b-it-4bit` (stock, no adapters) |
 | **Inference** | `mlx-lm` (Apple Silicon native) |
 | **Personality** | System prompt — `prompts/skye_persona.txt` |
 | **Embedding Model** | `all-MiniLM-L6-v2` (sentence-transformers) |

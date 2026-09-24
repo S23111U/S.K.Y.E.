@@ -2,7 +2,7 @@
 .venv
 logs
 .vscode
-SKYE
+.claude
 
 # OS / editor cruft
 .DS_Store
@@ -10,3 +10,14 @@ SKYE
 # Python bytecode
 __pycache__/
 *.pyc
+assets/filler_cache/
+memory/notion_undo.json
+
+# Google Calendar credentials and login token
+gcp-oauth.keys.json
+memory/google_token.json
+memory/calendar_undo.json
+
+memory/proactive_state.json
+memory/routine.json
+memory/calendar_alerted.json

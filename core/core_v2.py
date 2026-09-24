@@ -2,27 +2,52 @@ import os
 import sys
 import re
 import json
+import base64
+import glob
+import importlib.util
+import platform
+import queue
+import random
 import socket
+import subprocess
 import threading
 import time
 import webbrowser
-import wikipedia
 import asyncio
-from datetime import datetime
+from contextlib import AsyncExitStack
+from datetime import datetime, timedelta
+import mlx.core as mx
 from mlx_lm import load, stream_generate
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT)
 
-from helper_functions.current_time import TellTime
-from helper_functions.weather import Get_Info
-from helper_functions.set_alarm import set_alarm
-from helper_functions.set_reminder import set_reminder
-from helper_functions.GenAI import GenAI_search
-from helper_functions.greet import Greetings
-from helper_functions.news import fetch_news_summary
+from plyer import notification
 from clients.browser import start_http_server, open_browser, start_ws_server
-from core.protocol import frame
+from core.protocol import frame, FrameReader
+from core import stt
+from core import tts_client as tts
+from core.mood import MoodClassifier, MOOD_PARAMS
+from core import direct_routes, einstein
+from core.proactive import Proactive
+from core.guardrails import apply_runtime_guardrails
+from core.text_utils import sanitise_raw, split_sentences
+from core.fillers import FILLERS, FILLER_TOOL_HINTS, TOOL_FILLERS, pick_filler
+from core.confirm import CONFIRM_TOOLS, CONFIRM_TTL_S, NO_ONLY_RE, NO_RE, YES_RE, _PENDING, _describe_action
+from skills.registry import STICKY_TURNS, manifest_text, route_skill, ui_for
+from scripts.ingest_history import ingest_all_logs
+from memory.tasks import format_due
+
+# `memory/short-term/` has a hyphen, so it can't be a normal dotted import
+# target (`memory.short-term` isn't valid Python syntax) — loaded by file
+# path instead. Only its `run_fact_extraction` function is used here.
+_proposed_facts_spec = importlib.util.spec_from_file_location(
+    "proposed_facts", os.path.join(ROOT, "memory", "short-term", "proposed_facts.py")
+)
+proposed_facts = importlib.util.module_from_spec(_proposed_facts_spec)
+_proposed_facts_spec.loader.exec_module(proposed_facts)
 
 # =========================================================
 # SYSTEM CONFIG & PATHS
@@ -47,216 +72,145 @@ SAFETY_BLOCKLIST = {
 # SESSION / TELEMETRY STATE
 # =========================================================
 SESSION_ID = datetime.now().strftime("%Y%m%d_%H%M%S")
+stt.set_log_path(os.path.join(LOG_DIR, f"stt_{SESSION_ID}.jsonl"))
 TURN_INDEX = 0
 TELEMETRY_FILE = os.path.join(LOG_DIR, f"telemetry_{SESSION_ID}.jsonl")
 MODEL_LOCK = threading.Lock()
+
+# Per-turn latency breakdown, filled in by stream_skye_response() and completed
+# (TTS times added, then written out) by _run_turn(). Exists because "replies
+# feel slower as the conversation goes on" was a feeling with nothing to
+# measure it against.
+TIMING_FILE = os.path.join(LOG_DIR, f"timing_{SESSION_ID}.jsonl")
+LAST_TURN_TIMING = {}
+# (skill, turns left): keeps the last turn's skill for a follow-up like "undo that".
+_SKILL_STICKY = [None, 0]
+
+# Connections currently open, so the scheduler thread can push a proactive
+# check-in to whatever browser tab(s) are live without one having just sent
+# a message — see _broadcast_proactive() and handle_client().
+ACTIVE_CONNECTIONS = []
+ACTIVE_CONNECTIONS_LOCK = threading.Lock()
+
+# MLX streams are thread-local (mlx >= 0.31.2) — a stream created on one
+# thread cannot be used from another. Since every client connection is
+# handled on its own thread (see handle_client/start_server_mode), all MLX
+# work on that thread must run inside `with mx.stream(MLX_STREAM):`, which
+# transparently gives each calling thread its own valid stream.
+MLX_STREAM = mx.new_thread_local_stream(mx.default_device())
 
 
 # =========================================================
 # LONG-TERM MEMORY
 # =========================================================
 from memory.manager import MemoryManager
+from memory.tasks import TaskStore
 
 MEMORY = MemoryManager(ROOT)
+print("Loading emotion model...")
+MOOD = MoodClassifier()
+print("✓ EMOTION MODEL ONLINE")
+TASKS = TaskStore(ROOT)
 
 # =========================================================
 # GUARDRAIL CONFIG
 # =========================================================
-MAX_SENTENCES = 8
-MAX_WORDS = 200
-
-STYLE_TOKENS = ["sir", "certainly", "of course", "acknowledged"]
-
-FORBIDDEN_ROLE_TOKENS = [
-    "user:",
-    "assistant:",
-    "system:",
-    "tutor:",
-    "chatran:",
-]
-
-LOW_INFO_PHRASES = [
-    "everything is functioning flawlessly",
-    "absolutely",
-    "that's what i'm here for",
-    "consider it handled",
-    "farewell",
-    "standing by for your directive",
-    "all systems are operational",
-    "right away",
-]
-
-# Intentionally fuzzy to catch hallucinated function calls and broken JSON blocks.
-CALL_FUNC_RE = re.compile(
-    r"CALL_FUNC\w*\s*:.*",
-    re.DOTALL | re.IGNORECASE,
-)
-
-# Catch dangling JSON tail fragments
-JSON_TAIL_RE = re.compile(r"(\s*[{}]\s*:\s*[{}]\s*){1,}", re.IGNORECASE)
-
-# Standalone status/filler phrases that should always be stripped
-ALWAYS_STRIP_PHRASES = [
-    r"operation completed",
-    r"systems? green and stable",
-    r"systems? (?:are )?(?:fully )?operational",
-    r"standing by for your directive",
-    r"everything is functioning flawlessly",
-    r"all systems (?:are )?(?:fully )?online",
-    r"all systems functioning within normal parameters",
-    r"task executed successfully",
-    r"awaiting your next command",
-    r"executing now",
-    r"on it(?:, sir)?",
-    r"as you wish(?:, sir)?",
-]
+# The text-cleanup pipeline itself (split_sentences, sanitise_raw,
+# apply_runtime_guardrails, and everything they're built from) lives in
+# core/text_utils.py and core/guardrails.py — pure functions with no shared
+# engine state, so they're safe to import from anywhere. Only the one regex
+# still used directly in this file (the CALL_FUNC parser, further down) stays
+# here.
 
 # Detect actual execution payloads (both CALL_FUNC and 'Executing function' from older logs)
 CALL_EXEC_PATTERN = re.compile(
     r"(CALL_FUNC|Executing function)\w*\s*[:\-]*\s*(.*)", re.DOTALL | re.IGNORECASE
 )
 
-
+# Einstein mode is a switch, not a one-off: saying "Einstein mode" turns it on
+# and it stays on (gold UI) until he says to switch it off.
+_EINSTEIN_ON = False
+EINSTEIN_MODE_RE = einstein.MODE_RE
+# Weather is answered by the tool, always. The small model sometimes replied
+# from thin air ("partly cloudy") without calling it, which is a made-up fact.
+WEATHER_RE = re.compile(r"\b(?:weather|temperature|forecast|how (?:hot|cold|warm)|is it (?:raining|sunny|cold|hot|warm)|will it rain)\b", re.IGNORECASE)
+WEATHER_CITY_RE = re.compile(
+    r"\b(?:in|for|at|of)\s+([A-Za-z][A-Za-z .'-]*(?:,\s*[A-Za-z .'-]+)*?)\s*(?:right now|today|tonight|tomorrow|now|currently|at the moment|like)?\s*[?.!]*\s*$",
+    re.IGNORECASE,
+)
+TIME_RE = re.compile(r"\b(?:what(?:'s| is)? the time|what time is it|what time (?:is it|it is)|current time|tell me the time|time (?:is it )?(?:right )?now)\b", re.IGNORECASE)
+DATE_RE = re.compile(r"\b(?:what(?:'s| is)? (?:the )?(?:date|day)(?: today)?|what day is (?:it|today)|today'?s date|what(?:'s| is) today)\b", re.IGNORECASE)
+# "Clear the conversation": really empties the short-term context. Long-term
+# memory and the profile are deliberately NOT wiped by a spoken phrase; the
+# reply says so instead of pretending, which is what the model used to do.
+CLEAR_RE = re.compile(
+    r"\b(?:(?:clear|reset|wipe|empty|delete|forget)\b.{0,20}\b(?:context|conversation|chat|history|everything (?:we|you)|this (?:chat|session))|"
+    r"(?:start|begin) (?:over|afresh|a new (?:conversation|chat))|new (?:conversation|chat)|fresh start)\b",
+    re.IGNORECASE,
+)
+# What is left of "use Einstein mode" once the switching words are removed: if
+# nothing real remains, he means "answer my last question that way".
+EINSTEIN_FILLER_WORDS = {
+    "use", "using", "switch", "switching", "turn", "on", "to", "the", "mode", "please", "now", "activate",
+    "enable", "go", "into", "with", "for", "that", "this", "it", "again", "try", "and", "can", "you",
+    "could", "einstein", "einsteins", "skye", "sky", "then", "so", "okay", "ok", "answer", "redo", "do",
+    "let", "lets", "let's", "me", "i", "want", "would", "like", "a", "an", "of", "in", "up", "over",
+    "genius", "deep", "think", "thinking", "much", "harder", "properly", "better", "more",
+}
 # =========================================================
-# TEXT UTILITIES & GUARDRAILS
+# CANVAS SPLITTING & WEB-ANSWER SYNTHESIS
 # =========================================================
-def split_sentences(text: str) -> list[str]:
-    return [s for s in re.split(r"(?<=[.!?])\s+", text.strip()) if s.strip()]
+# (Everything else that used to live here — split_sentences, sanitise_raw,
+# apply_runtime_guardrails — moved to core/text_utils.py and core/guardrails.py.
+# What's left needs model/tokenizer/MODEL_LOCK, so it stays in this file.)
+WEB_SOURCES_MARKER = "[WEB SOURCES]"
+CANVAS_MARKER = "\n[CANVAS]"
 
 
-def suppress_low_info_phrases(text: str) -> str:
-    for phrase in LOW_INFO_PHRASES:
-        lowered = text.lower()
-        if lowered.count(phrase) > 1:
-            parts = re.split(rf"({re.escape(phrase)})", text, flags=re.IGNORECASE)
-            kept, seen = [], False
-            for part in parts:
-                if part.lower() == phrase.lower():
-                    if not seen:
-                        kept.append(part)
-                        seen = True
-                else:
-                    kept.append(part)
-            text = "".join(kept).strip()
-    return text
+def _split_canvas(text: str):
+    """(spoken text, canvas payload or None): tools append rich content for the
+    screen after this marker (see mcp_server/canvas.py); it is never spoken."""
+    if CANVAS_MARKER not in text:
+        return text, None
+    spoken, _, raw = text.partition(CANVAS_MARKER)
+    try:
+        return spoken, json.loads(raw)
+    except ValueError:
+        return spoken, None
 
 
-def strip_status_filler(text: str) -> str:
-    for pattern in ALWAYS_STRIP_PHRASES:
-        text = re.sub(
-            rf"[,.]?\s*{pattern}\s*[,.]?",
-            "",
-            text,
-            flags=re.IGNORECASE,
-        )
-    text = re.sub(r"\s{2,}", " ", text)
-    # NB: '.' is deliberately absent from the *trailing* class. It is still
-    # stripped from the front. Leaving it here removed the full stop from the
-    # end of every reply.
-    text = re.sub(r"^[\s.,;]+|[\s,;]+$", "", text)
-    return text.strip()
+WEB_SYNTH_SYSTEM = (
+    "You are S.K.Y.E., a dry, precise assistant. Answer the user's question "
+    "using ONLY the numbered sources below. Sources are noisy and may disagree "
+    "or be out of date: prefer the most recent, favour facts several sources "
+    "agree on, and never fill a gap from your own memory. Every name, score "
+    "and date you state must appear in the sources. If the sources conflict "
+    "or do not cover the question, say so plainly instead of guessing. For "
+    "time-sensitive facts, say how recent the information is. Compare every event "
+    "date with today's date: an event before today has already happened and is "
+    "never 'upcoming' or 'next'; if no future fixture appears in the sources, "
+    "say none was found. Plain spoken "
+    "prose, three to five sentences, no markdown, no lists."
+)
 
 
-def role_integrity_failed(text: str) -> bool:
-    lower = text.lower()
-    if any(tok in lower for tok in FORBIDDEN_ROLE_TOKENS):
-        return True
-    if len(re.findall(r"\b[A-Z][a-z]+:\s", text)) >= 2:
-        return True
-    return False
-
-
-def _normalise_for_comparison(text: str) -> str:
-    result = strip_status_filler(text)
-    for phrase in LOW_INFO_PHRASES:
-        result = re.sub(re.escape(phrase), "", result, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", result).strip().lower()
-
-
-def repetition_detected(text: str, history: list[str]) -> bool:
-    sentences = split_sentences(text)
-    normalised_sentences = [
-        _normalise_for_comparison(s) for s in sentences if _normalise_for_comparison(s)
+def synthesize_web_answer(question: str, query: str, sources: str) -> str:
+    """Second, grounded generation pass over raw web_search sources."""
+    messages = [
+        {"role": "system", "content": WEB_SYNTH_SYSTEM},
+        {"role": "user", "content": f"Question: {question}\nSearch query used: {query}\n\n{sources}"},
     ]
-    if len(normalised_sentences) != len(set(normalised_sentences)):
-        return True
-    norm = _normalise_for_comparison(text)
-    if len(norm) < 20:
-        return False
-    return any(norm == _normalise_for_comparison(prev) for prev in history)
+    with MODEL_LOCK:
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+        out = ""
+        for chunk in stream_generate(model, tokenizer, prompt=prompt, max_tokens=260):
+            out += chunk.text
+    return sanitise_raw(out.split("<turn|>")[0].strip())
 
 
-def exceeds_verbosity(text: str) -> bool:
-    return len(text.split()) > MAX_WORDS or len(split_sentences(text)) > MAX_SENTENCES
 
-
-def personality_saturated(text: str) -> bool:
-    words = text.lower().split()
-    hits = sum(words.count(tok) for tok in STYLE_TOKENS)
-    return hits / max(len(words), 1) > 0.08
-
-
-# =========================================================
-# RAW OUTPUT SANITISATION
-# =========================================================
-def sanitise_raw(text: str) -> str:
-    """
-    Aggressive pre-guardrail cleanup of raw model output.
-
-    Everything removed here was an artefact of the fine-tuned adapter, which is
-    gone. The <draft>/<critique>/<final_answer> strippers went with it; archived
-    logs still contain those tags, so ingest_history.py and proposed_facts.py
-    keep their own handling. The role-leak chain and trailing-stub strippers
-    went too: the persona now handles tone, and both regexes damaged ordinary
-    prose ("The reason: it works." lost its clause, and a persona-sanctioned
-    trailing "Sir" was cut down to a dangling comma).
-    """
-    text = re.sub(r"<\|end\|>|<\|assistant\|>|<unk>|<s>|</s>", "", text)
-    text = CALL_FUNC_RE.sub("", text)
-    text = JSON_TAIL_RE.sub("", text)
-    text = strip_status_filler(text)
-
-    text = re.sub(r"\s+", " ", text).strip()
-    text = re.sub(r",\s*,", ",", text)
-    text = re.sub(r"\s*,\s*", ", ", text)
-    text = re.sub(r"([\s:;}\]]+)$", "", text)
-    return text.strip()
-
-
-# =========================================================
-# RUNTIME GUARDRAILS
-# =========================================================
-def apply_runtime_guardrails(text: str, history: list[str]):
-    """
-    Hard-coded Python fail-safes on length, tone and repetition.
-
-    Built to compensate for the fine-tune that has since been removed. Which of
-    these can still fire is under review; the caller logs every one that does.
-    """
-    triggered = []
-
-    if role_integrity_failed(text):
-        triggered.append("role_integrity_reset")
-        return "Apologies. I'm SKYE — how may I assist you?", triggered
-
-    if repetition_detected(text, history):
-        triggered.append("repetition_abort")
-        return "Apologies. Let me respond more clearly and concisely.", triggered
-
-    if exceeds_verbosity(text):
-        triggered.append("verbosity_truncate")
-        truncated = " ".join(split_sentences(text)[:MAX_SENTENCES])
-        return truncated, triggered
-
-    if personality_saturated(text):
-        triggered.append("personality_dampen")
-        text = re.sub(r"\b(Sir|sir)\b[, ]*", "", text).strip()
-
-    cleaned = suppress_low_info_phrases(text)
-    if cleaned != text:
-        triggered.append("low_info_suppression")
-
-    return cleaned, triggered
 
 
 # =========================================================
@@ -291,74 +245,409 @@ def save_telemetry(
 # =========================================================
 print("Loading SKYE...")
 with MODEL_LOCK:
-    model, tokenizer = load("mlx-community/Meta-Llama-3-8B-Instruct-4bit")
+    model, tokenizer = load("mlx-community/gemma-4-e4b-it-4bit")
     tokenizer.eos_token_ids = {
-        tokenizer.convert_tokens_to_ids("<|eot_id|>"),
-        tokenizer.convert_tokens_to_ids("<|end_of_text|>"),
+        tokenizer.convert_tokens_to_ids("<turn|>"),
+        tokenizer.convert_tokens_to_ids("<eos>"),
     }
+    # mlx's first-ever generation call bakes in some internal state (compiled
+    # kernels / cache templates) that isn't safely reusable across threads
+    # unless that first call happened on the main thread. Every real request
+    # runs stream_generate from a per-connection worker thread (handle_client),
+    # which crashes with "There is no Stream(gpu, N) in current thread"
+    # without this warmup.
+    _warmup_prompt = tokenizer.apply_chat_template(
+        [{"role": "user", "content": "hi"}],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    for _ in stream_generate(model, tokenizer, prompt=_warmup_prompt, max_tokens=1):
+        pass
 print("✓ SKYE ONLINE\n")
 
 
-# =========================================================
-# TOOL REGISTRY
-# =========================================================
-TOOLS = {}
-
-
-def register_tool(name, func):
-    TOOLS[name] = func
-
-
-register_tool("tell_time", lambda **kw: TellTime())
-register_tool(
-    "get_weather",
-    lambda **kw: Get_Info()[1] + ": " + str(Get_Info()[2]) + "°C, " + Get_Info()[3],
-)
-register_tool(
-    "set_alarm",
-    lambda **kw: threading.Thread(target=set_alarm, args=(kw.get("time"),), daemon=True)
-    or f"Alarm set for {kw.get('time')}.",
-)
-register_tool(
-    "set_reminder",
-    lambda **kw: threading.Thread(
-        target=set_reminder, args=(kw.get("time"), kw.get("task")), daemon=True
+def _warm_llm():
+    """One throwaway generation with a realistic (persona-sized) prompt, so the
+    first real reply doesn't pay for cold Metal kernels — the very first turn of
+    a session took 22 s against ~2 s afterwards."""
+    prompt = tokenizer.apply_chat_template(
+        [{"role": "system", "content": PERSONA}, {"role": "user", "content": "hello"}],
+        tokenize=False, add_generation_prompt=True, enable_thinking=False,
     )
-    or f"Reminder set: {kw.get('task')} at {kw.get('time')}.",
-)
-register_tool("web_search", lambda **kw: wikipedia_summary_or_genai(kw.get("query")))
-register_tool("open_youtube", lambda **kw: web_open_and_ack("youtube", kw.get("query")))
-register_tool("open_spotify", lambda **kw: web_open_and_ack("spotify", kw.get("query")))
-register_tool("open_calendar", lambda **kw: web_open_and_ack("google", "calendar"))
-register_tool("fetch_news", lambda **kw: fetch_news_summary(kw.get("query")))
+    with MODEL_LOCK, mx.stream(MLX_STREAM):
+        for _ in stream_generate(model, tokenizer, prompt=prompt, max_tokens=12):
+            pass
 
 
-def wikipedia_summary_or_genai(query):
-    if not query:
-        return "No query provided."
+_warm_llm()
+
+print("Loading TTS (Chatterbox Turbo)...")
+tts.start()
+print("✓ TTS ONLINE\n")
+
+
+# =========================================================
+# BACKGROUND SCHEDULER — nightly memory consolidation
+# =========================================================
+# Nothing outside this process ever scheduled `nightly_agi_cron.py` (no cron
+# entry, no launchd plist exists anywhere in the repo) — the fact-extraction
+# and semantic-ingestion pipeline it runs has simply never executed. Rather
+# than relying on an external scheduler firing at a fixed clock time (which
+# silently misses a whole day if the laptop is asleep or the server isn't
+# running then), a lightweight in-process thread checks once a minute
+# whether more than a day has passed since the last run, and if so runs it
+# there and then — resilient to the server being started at an arbitrary
+# time, at the cost of "once a day, whenever it's next up" rather than a
+# fixed hour.
+CONSOLIDATION_STATE_FILE = os.path.join(LOG_DIR, ".consolidation_state.json")
+CONSOLIDATION_INTERVAL = timedelta(hours=20)
+SCHEDULER_TICK_SECONDS = 5      # timers are set in seconds, so a minute-long tick would be visibly late
+EVENT_ALERT_EVERY_S = 60
+
+
+def _consolidation_due() -> bool:
+    if not os.path.exists(CONSOLIDATION_STATE_FILE):
+        return True
     try:
-        return wikipedia.summary(query, sentences=2)
+        with open(CONSOLIDATION_STATE_FILE, "r") as f:
+            state = json.load(f)
+        last_run = datetime.fromisoformat(state["last_run"])
     except Exception:
-        return GenAI_search(query)
+        return True
+    return datetime.now() - last_run >= CONSOLIDATION_INTERVAL
 
 
-def web_open_and_ack(site_key, query=None):
-    sites = {
-        "youtube": "https://youtube.com",
-        "wikipedia": "https://wikipedia.com",
-        "google": "https://google.com",
-        "spotify": "https://open.spotify.com",
-    }
-    url = sites.get(site_key, "https://google.com")
-    if query:
-        if site_key == "youtube":
-            webbrowser.open(f"https://www.youtube.com/results?search_query={query}")
-            return f"Opening YouTube for {query}."
-        if site_key == "spotify":
-            webbrowser.open(f"https://open.spotify.com/search/{query}")
-            return f"Opening Spotify for {query}."
-    webbrowser.open(url)
-    return f"Opening {site_key}."
+def _mark_consolidation_ran():
+    with open(CONSOLIDATION_STATE_FILE, "w") as f:
+        json.dump({"last_run": datetime.now().isoformat()}, f)
+
+
+DIAGNOSTICS_FILE = os.path.join(LOG_DIR, "diagnostics.json")
+
+
+def _run_diagnostics_pass(log_files):
+    """Aggregates guardrail-trigger and tool success/failure counts from a
+    batch of telemetry files into a small running report.
+
+    Pure counting over data `save_telemetry()` already logs on every turn —
+    no LLM call, no change to the live turn path. Tool success/failure is
+    read from the same `"Apologies" in assistant_output` convention
+    `stream_skye_response()` already relies on elsewhere (for deciding
+    whether to keep a turn in SHARED_MESSAGES), rather than plumbing a new
+    explicit flag through call_function_safe().
+    """
+    report = {"guardrails": {}, "tools": {}, "turns_analyzed": 0, "total_words": 0, "total_sentences": 0}
+    if os.path.exists(DIAGNOSTICS_FILE):
+        try:
+            with open(DIAGNOSTICS_FILE, "r") as f:
+                report.update(json.load(f))
+        except Exception:
+            pass
+
+    for filename in log_files:
+        try:
+            with open(filename, "r") as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                    except Exception:
+                        continue
+                    report["turns_analyzed"] += 1
+                    for g in event.get("guardrails_triggered") or []:
+                        report["guardrails"][g] = report["guardrails"].get(g, 0) + 1
+                    stats = event.get("response_stats") or {}
+                    tool_name = stats.get("tool_dispatched")
+                    if tool_name:
+                        entry = report["tools"].setdefault(tool_name, {"success": 0, "failure": 0})
+                        if "Apologies" in (event.get("assistant_output") or ""):
+                            entry["failure"] += 1
+                        else:
+                            entry["success"] += 1
+                    report["total_words"] += stats.get("word_count", 0) or 0
+                    report["total_sentences"] += stats.get("sentence_count", 0) or 0
+        except Exception as e:
+            print(f"[Diagnostics ERROR]: Could not read {filename}: {e}")
+
+    with open(DIAGNOSTICS_FILE, "w") as f:
+        json.dump(report, f, indent=2)
+    print(f"[Scheduler]: Diagnostics updated — {report['turns_analyzed']} turns analyzed (cumulative).")
+    return report
+
+
+TIMING_RETENTION_DAYS = 14
+TTS_LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _prune_logs():
+    """Housekeeping for diagnostic-only files. timing_*.jsonl (per-turn latency
+    breakdowns) is read by nothing in SKYE — only by a human debugging — so it
+    is deleted after two weeks; telemetry_*.jsonl is NOT touched (memory
+    ingestion and fact extraction read it). The TTS subprocess log is trimmed
+    to its last 200 KB once it passes 2 MB."""
+    try:
+        cutoff = time.time() - TIMING_RETENTION_DAYS * 86400
+        for f in glob.glob(os.path.join(LOG_DIR, "timing_*.jsonl")) + glob.glob(os.path.join(LOG_DIR, "stt_*.jsonl")):
+            if os.path.getmtime(f) < cutoff:
+                os.remove(f)
+        tts_log = os.path.join(LOG_DIR, "tts_server.log")
+        if os.path.isfile(tts_log) and os.path.getsize(tts_log) > TTS_LOG_MAX_BYTES:
+            with open(tts_log, "r+b") as fh:   # the writer appends, so truncating is safe
+                fh.seek(-200 * 1024, os.SEEK_END)
+                tail = fh.read()
+                fh.seek(0)
+                fh.truncate()
+                fh.write(tail)
+    except OSError as e:
+        print(f"[Scheduler]: log pruning skipped: {e}")
+
+
+_prune_logs()   # also at boot: the nightly job only runs if SKYE is up at that hour
+
+
+def _run_daily_consolidation():
+    print("[Scheduler]: Running nightly memory consolidation...")
+    _prune_logs()
+    try:
+        # Captured before run_fact_extraction moves these files into
+        # processed_logs/, so diagnostics analyzes the same batch fact
+        # extraction just did.
+        log_files = glob.glob(os.path.join(LOG_DIR, "telemetry_*.jsonl"))
+        _run_diagnostics_pass(log_files)
+
+        with MODEL_LOCK, mx.stream(MLX_STREAM):
+            old_claims = proposed_facts.run_fact_extraction(model, tokenizer)
+        ingest_all_logs(memory=MEMORY)
+        # Superseding must happen AFTER ingestion, not before: ingest_all_logs
+        # re-embeds every dialogue pair in these same files unconditionally,
+        # including the turn where the now-wrong claim was originally stated —
+        # superseding it first would just have it silently reappear moments
+        # later from that same ingestion pass.
+        for claim in old_claims:
+            superseded_count = MEMORY.supersede_similar(claim)
+            print(f"[Scheduler]: Correction '{claim}' superseded {superseded_count} memory row(s).")
+
+        _mark_consolidation_ran()
+        print("[Scheduler]: Nightly memory consolidation complete.")
+    except Exception as e:
+        print(f"[Scheduler ERROR]: Nightly consolidation failed: {e}")
+
+
+def _notify_os(title: str, message: str):
+    """OS-level notification — the fallback that fires regardless of whether
+    a browser tab is even open (or asleep), so a time-critical alarm is never
+    silently missed just because no one's listening for voice.
+
+    plyer's macOS backend needs `pyobjus` (an Objective-C bridge that's
+    effectively unmaintained and frequently fails to build against current
+    macOS/Python), so macOS is handled directly via `osascript` instead —
+    it ships with every Mac, no extra dependency required. Windows keeps
+    using plyer, which is what this was originally written and run against.
+    """
+    system = platform.system()
+    if system == "Darwin":
+        script = f"display notification {json.dumps(message)} with title {json.dumps(title)}"
+        subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+    else:
+        notification.notify(title=title, message=message, app_name="SKYE", timeout=10)
+
+
+def _spoken_task(description: str) -> str:
+    """What SKYE says when a stored task comes due."""
+    d = description.strip()
+    m = re.match(r"Alarm:\s*(.+)", d)
+    if m:
+        return f"It is {m.group(1)}. Your alarm is going off."
+    m = re.match(r"Timer(?::\s*(.+))?$", d)
+    if m:
+        return f"Your {m.group(1)} timer is up." if m.group(1) else "Your timer is up."
+    return f"Reminder: {d}"
+
+
+def _fire_due_tasks():
+    for task in TASKS.get_due():
+        message = _spoken_task(task["description"])
+        print(f"[Scheduler]: Task due — {message}")
+        try:
+            _notify_os("SKYE", message)
+        except Exception as e:
+            print(f"[Scheduler ERROR]: OS notification failed: {e}")
+        _broadcast_proactive(message)
+        if task["recurrence"]:
+            TASKS.reschedule(task["id"])
+        else:
+            TASKS.mark_status(task["id"], "done")
+
+
+PROACTIVE = Proactive()
+_PROACTIVE_SAID = ""
+_last_proactive_check = 0.0
+BRIEFING_OFFER = "Good morning. Would you like your morning briefing?"
+
+
+def _proactive_tick():
+    """Unprompted check-ins (see core/proactive.py); at most once every 30 s."""
+    global _last_proactive_check
+    if time.time() - _last_proactive_check < 30:
+        return
+    _last_proactive_check = time.time()
+    with ACTIVE_CONNECTIONS_LOCK:
+        connected = bool(ACTIVE_CONNECTIONS)
+    text = PROACTIVE.tick(
+        connected,
+        todo_nudge=lambda: call_mcp_tool("todo_nudge", {}) if "todo_nudge" in TOOL_ROUTES else "",
+        briefing_offer=BRIEFING_OFFER if "morning_briefing" in TOOL_ROUTES else None,
+    )
+    if not text:
+        return
+    print(f"[Proactive]: {text}")
+    if text == BRIEFING_OFFER:      # "yes" then runs the briefing
+        _PENDING.update(tool="morning_briefing", args={}, at=time.time())
+    global _PROACTIVE_SAID
+    _PROACTIVE_SAID = text            # his next message is probably the answer to this
+    _broadcast_proactive(text)
+
+
+_last_event_check = 0.0
+
+
+def _announce_events():
+    """A spoken heads-up shortly before a calendar event (see calendar_tools.due_alerts)."""
+    global _last_event_check
+    if time.time() - _last_event_check < EVENT_ALERT_EVERY_S or "event_alerts" not in TOOL_ROUTES:
+        return
+    _last_event_check = time.time()
+    try:
+        text = call_mcp_tool("event_alerts", {})
+    except Exception as e:
+        print(f"[Scheduler]: event alerts failed: {e}")
+        return
+    if text and text.strip():
+        print(f"[Scheduler]: {text}")
+        try:
+            _notify_os("SKYE", text)
+        except Exception:
+            pass
+        _broadcast_proactive(text)
+
+
+def _scheduler_loop():
+    while True:
+        if _consolidation_due():
+            _run_daily_consolidation()
+        _fire_due_tasks()
+        _announce_events()
+        _proactive_tick()
+        time.sleep(SCHEDULER_TICK_SECONDS)
+
+
+# =========================================================
+# TOOL EXECUTION — MCP client
+# =========================================================
+# Every tool used to be a plain Python function in an in-process `TOOLS`
+# dict, called directly by call_function_safe(). That dict is gone —
+# mcp_server/server.py now serves the exact same set of tools (faithfully
+# ported, see that file) over MCP, running as its own subprocess.
+#
+# MCP client sessions are async and need to stay alive for the life of the
+# stdio connection to that subprocess, but stream_skye_response()/
+# handle_client() are synchronous throughout (always have been — only
+# clients/browser.py's WS<->TCP bridge uses asyncio, for an unrelated
+# reason). Rather than convert the whole turn-handling path to async, one
+# dedicated background thread runs its own event loop for the life of the
+# process; call_mcp_tool() bridges a synchronous call site to it via
+# asyncio.run_coroutine_threadsafe(), the standard pattern for exactly this.
+MCP_SERVER_PATH = os.path.join(ROOT, "mcp_server", "server.py")
+TOOL_ROUTES = {}  # tool name -> ClientSession
+TOOL_PARAMS = {}   # tool name -> set of its real argument names (from the tool's own MCP schema)
+TOOL_TIMEOUTS = {"analyze_video": 180}   # Gemini watching a video takes far longer than the default 30 s
+# The model sometimes invents a plausible-but-wrong argument name (app_name
+# instead of name, note_title instead of title...). Rather than fail the
+# whole call, an invented key is mapped to whichever of these canonical names
+# the target tool actually declares.
+ARG_ALIASES = {
+    "name": {"app_name", "app", "site_name"},
+    "title": {"note_title", "task_title", "task", "event_title", "name"},
+    "body": {"content", "note_body", "notes", "message"},
+    "text": {"content", "body", "message"},
+    "target": {"site", "url", "address", "webpage"},
+    "query": {"song", "track", "search", "q", "artist", "title"},
+    "task": {"description", "reminder", "what", "item"},
+    "time": {"when", "at"},
+    "when": {"time", "at", "date"},
+    "duration": {"length"},
+    "which": {"name", "title", "label"},
+    "contact": {"name", "who", "person"},
+    "status": {"state"},
+    "category": {"type"},
+    "period": {"range", "timeframe"},
+}
+
+
+def _normalize_tool_args(tool_name, args):
+    """Renames arguments the model got wrong (see ARG_ALIASES) and drops any
+    that still don't match — a wrong extra key crashing the whole call is a
+    worse outcome than the tool asking a clarifying question over one missing
+    field. Silent no-op for tools whose schema wasn't captured (never seen in
+    testing) or plain-dict args that already look right."""
+    valid = TOOL_PARAMS.get(tool_name)
+    if not valid or not isinstance(args, dict):
+        return args
+    out = {}
+    for k, v in args.items():
+        if k in valid:
+            out[k] = v
+            continue
+        canon = next((c for c, aliases in ARG_ALIASES.items() if c in valid and c not in out and k in aliases), None)
+        if canon:
+            out[canon] = v
+        else:
+            print(f"[tool args] dropping unrecognised {tool_name}({k!r}) — valid args are {sorted(valid)}")
+    return out
+_mcp_loop = None
+_mcp_exit_stack = None
+
+
+async def _mcp_connect():
+    global _mcp_exit_stack
+    _mcp_exit_stack = AsyncExitStack()
+    server_params = StdioServerParameters(command=sys.executable, args=[MCP_SERVER_PATH])
+    read, write = await _mcp_exit_stack.enter_async_context(stdio_client(server_params))
+    session = await _mcp_exit_stack.enter_async_context(ClientSession(read, write))
+    await session.initialize()
+    tools = await session.list_tools()
+    for t in tools.tools:
+        TOOL_ROUTES[t.name] = session
+        TOOL_PARAMS[t.name] = set((getattr(t, "input_schema", None) or getattr(t, "inputSchema", None) or {}).get("properties", {}))
+    print(f"[MCP] Connected to local tool server — {len(TOOL_ROUTES)} tools: {', '.join(TOOL_ROUTES)}")
+
+
+def start_mcp_bridge():
+    global _mcp_loop
+    _mcp_loop = asyncio.new_event_loop()
+
+    def _run_loop():
+        asyncio.set_event_loop(_mcp_loop)
+        _mcp_loop.run_forever()
+
+    threading.Thread(target=_run_loop, daemon=True).start()
+    # Block startup until the local tool server is actually up and
+    # list_tools() has populated TOOL_ROUTES — every mode (CLI and socket
+    # server) needs working tools from the moment it starts accepting input.
+    asyncio.run_coroutine_threadsafe(_mcp_connect(), _mcp_loop).result(timeout=30)
+
+
+def call_mcp_tool(name, arguments):
+    session = TOOL_ROUTES[name]
+
+    async def _call():
+        return await session.call_tool(name, arguments)
+
+    result = asyncio.run_coroutine_threadsafe(_call(), _mcp_loop).result(timeout=TOOL_TIMEOUTS.get(name, 30))
+    text = result.content[0].text if result.content else None
+    if result.is_error:
+        raise RuntimeError(text or "unknown MCP tool error")
+    return text
 
 
 # =========================================================
@@ -404,7 +693,7 @@ def extract_function_call(raw_text):
             if not isinstance(arguments, dict):
                 arguments = {}
             return name, arguments, narration
-        except Exception as e:
+        except Exception:
             continue
     return None, None, raw_text
 
@@ -414,15 +703,23 @@ def call_function_safe(name, args):
         return "Apologies, Sir. Could not detect a function."
     if name in SAFETY_BLOCKLIST:
         return f"Negative, Sir. `{name}` is not authorized."
-    fn = TOOLS.get(name)
-    if not fn:
+    if name not in TOOL_ROUTES:
         return f"Apologies, Sir. I lack the tool `{name}`."
     try:
-        result = fn(**args) if callable(fn) else fn
+        result = call_mcp_tool(name, _normalize_tool_args(name, args))
         return result if result is not None else "Executed."
     except Exception as e:
         print(f"\n[Tool Execution Error ({name})]: {e}")
         return f"Apologies, Sir. `{name}` failed."
+
+
+# Every mode (CLI and socket server) dispatches tools through
+# call_function_safe(), so the MCP bridge needs to be up before either
+# starts accepting input — done here, once, at import time, same as the
+# model load above it.
+print("Connecting to local tool server (MCP)...")
+start_mcp_bridge()
+print("✓ TOOLS ONLINE\n")
 
 
 # =========================================================
@@ -430,7 +727,36 @@ def call_function_safe(name, args):
 # =========================================================
 # CONVERSATION STATE
 # Shared chat history across an active session (for CLI or single-user Socket)
-SHARED_MESSAGES = []
+#
+# Persisted to disk so a server restart (a crash, a code update, closing the
+# laptop) doesn't wipe the immediate conversational thread — long-term memory
+# (persistent_profile.json, semantics.db, tasks.db) already survives a
+# restart; this brings the short-term window in line with that. Deliberately
+# NOT persisted: SESSION_ID/TURN_INDEX (a new boot should get a fresh
+# telemetry session, that's existing intended behavior) and LAST_TOOL_RESULT
+# (a single-turn staging value already cleared immediately after use).
+CONVERSATION_STATE_FILE = os.path.join(ROOT, "memory", "conversation_state.json")
+
+
+def _load_conversation_state() -> list:
+    if os.path.exists(CONVERSATION_STATE_FILE):
+        try:
+            with open(CONVERSATION_STATE_FILE, "r") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"[Conversation state] Failed to load, starting fresh: {e}")
+    return []
+
+
+def _save_conversation_state():
+    try:
+        with open(CONVERSATION_STATE_FILE, "w") as f:
+            json.dump(SHARED_MESSAGES, f)
+    except Exception as e:
+        print(f"[Conversation state] Failed to save: {e}")
+
+
+SHARED_MESSAGES = _load_conversation_state()
 LAST_TOOL_RESULT = ""
 
 
@@ -451,25 +777,200 @@ def stream_skye_response(user_input: str):
     _t["start"] = time.time()
 
     # Fast path: Rules
-    rule_reply = rule_based_response(user_input)
+    LAST_TURN_TIMING.clear()
+    user_mood, emotion, emotion_score = MOOD.user_mood(user_input)
+    LAST_TURN_TIMING.update(
+        turn=TURN_INDEX, tool=None, user_mood=user_mood, emotion=emotion,
+        emotion_score=emotion_score, filler=None,
+    )
+
+    skill = route_skill(
+        user_input, _SKILL_STICKY[0] if _SKILL_STICKY[1] > 0 else None,
+        embed=lambda xs: MEMORY.model.encode(xs, normalize_embeddings=True),
+    )
+    if skill:
+        _SKILL_STICKY[0], _SKILL_STICKY[1] = skill, STICKY_TURNS
+    else:
+        _SKILL_STICKY[1] = max(0, _SKILL_STICKY[1] - 1)
+    LAST_TURN_TIMING["skill"] = skill
+
+    global _EINSTEIN_ON
+    if (EINSTEIN_MODE_RE.search(user_input) and einstein.is_off(user_input)) or (
+        _EINSTEIN_ON and einstein.NORMAL_RE.search(user_input)
+    ):
+        _EINSTEIN_ON = False
+        LAST_TOOL_RESULT = ""
+        reply = "Einstein mode is off."
+        save_telemetry(user_input, reply, ["rule_bypass"], False)
+        yield frame("skill", skill="default", ui="default", lock=False)
+        yield frame("done", text=reply)
+        return
+
+    direct = direct_routes.match(user_input)
+    if direct:
+        tool, args = direct
+        LAST_TOOL_RESULT = ""
+        if tool == "analyze_video":
+            LAST_TURN_TIMING["filler"] = einstein.VIDEO_FILLER
+            yield frame("filler", text=einstein.VIDEO_FILLER, mood="calm")
+        if tool in CONFIRM_TOOLS:
+            _PENDING.update(tool=tool, args=args, at=time.time())
+            result = f"I am about to {_describe_action(tool, args)}. Shall I go ahead?"
+        else:
+            result = str(call_function_safe(tool, args))
+        result, _payload = _split_canvas(result)
+        yield frame("tool", name=tool)
+        if _payload:
+            yield frame("canvas", **_payload)
+        SHARED_MESSAGES.append({"role": "user", "content": user_input})
+        SHARED_MESSAGES.append({"role": "assistant", "content": "CALL_FUNC: " + json.dumps({"name": tool, "arguments": args}, ensure_ascii=False)})
+        if len(SHARED_MESSAGES) > 7:
+            SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+        _save_conversation_state()
+        LAST_TURN_TIMING.update(tool=tool, skill="direct")
+        save_telemetry(user_input, result, [], True, tool, args)
+        yield frame("done", text=result)
+        return
+
+    if (TIME_RE.search(user_input) or DATE_RE.search(user_input)) and len(user_input.split()) <= 9:
+        # The clock is never the model's to guess: it once said "10:15 AM" at 7 PM.
+        LAST_TOOL_RESULT = ""
+        if TIME_RE.search(user_input):
+            result = str(call_function_safe("tell_time", {}))
+            result = f"It is {result}."
+            yield frame("tool", name="tell_time")
+        else:
+            result = datetime.now().strftime("Today is %A, %-d %B %Y.")
+        SHARED_MESSAGES.append({"role": "user", "content": user_input})
+        SHARED_MESSAGES.append({"role": "assistant", "content": result})
+        if len(SHARED_MESSAGES) > 7:
+            SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+        _save_conversation_state()
+        save_telemetry(user_input, result, [], TIME_RE.search(user_input) is not None, "tell_time" if TIME_RE.search(user_input) else None, {})
+        yield frame("done", text=result)
+        return
+
+    if WEATHER_RE.search(user_input) and not re.search(r"\b(?:my notes|note)\b", user_input, re.IGNORECASE):
+        m = WEATHER_CITY_RE.search(user_input.strip())
+        city = re.sub(r"\s+(?:right now|today|tonight|tomorrow|now|currently|at the moment)$", "", m.group(1).strip(), flags=re.IGNORECASE) if m else ""
+        city = city if m and m.group(1).strip().lower() not in ("the", "my", "here", "today", "general") else ""
+        LAST_TOOL_RESULT = ""
+        _f = pick_filler(user_input, user_mood)
+        if _f:
+            LAST_TURN_TIMING["filler"] = _f[0]
+            yield frame("filler", text=_f[0], mood=_f[1])
+        result = str(call_function_safe("get_weather", {"city": city} if city else {}))
+        yield frame("tool", name="get_weather")
+        SHARED_MESSAGES.append({"role": "user", "content": user_input})
+        SHARED_MESSAGES.append({"role": "assistant", "content": 'CALL_FUNC: ' + json.dumps({"name": "get_weather", "arguments": {"city": city} if city else {}})})
+        if len(SHARED_MESSAGES) > 7:
+            SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+        _save_conversation_state()
+        save_telemetry(user_input, result, [], True, "get_weather", {"city": city})
+        yield frame("done", text=result)
+        return
+
+    _snooze_reply = PROACTIVE.observe(user_input)
+    if _snooze_reply:
+        save_telemetry(user_input, _snooze_reply, ["rule_bypass"], False)
+        yield frame("done", text=_snooze_reply)
+        return
+
+    if _PENDING:
+        held = dict(_PENDING)
+        _PENDING.clear()
+        if time.time() - held["at"] <= CONFIRM_TTL_S:
+            if YES_RE.match(user_input):
+                result = str(call_function_safe(held["tool"], held["args"]))
+                yield frame("tool", name=held["tool"])
+                SHARED_MESSAGES.append({"role": "user", "content": user_input})
+                SHARED_MESSAGES.append({"role": "assistant", "content": result})
+                save_telemetry(user_input, result, [], True, held["tool"], held["args"])
+                yield frame("done", text=result)
+                return
+            if NO_RE.match(user_input):
+                reply = "Okay, I have cancelled that."
+                save_telemetry(user_input, reply, ["rule_bypass"], False)
+                yield frame("done", text=reply)
+                return
+        # anything else: the held action is dropped and this is a fresh request
+    elif NO_ONLY_RE.match(user_input):
+        # A bare "no"/"cancel that" with nothing pending: without this the model
+        # improvised ("I have cancelled the reminder...") and claimed an action
+        # that never happened.
+        reply = "Okay."
+        save_telemetry(user_input, reply, ["rule_bypass"], False)
+        yield frame("done", text=reply)
+        return
+
+    if CLEAR_RE.search(user_input):
+        SHARED_MESSAGES = []
+        LAST_TOOL_RESULT = ""
+        _SKILL_STICKY[0], _SKILL_STICKY[1] = None, 0
+        _save_conversation_state()
+        reply = "Done, this conversation is cleared."
+        if re.search(r"\bmemor", user_input, re.IGNORECASE):
+            reply += " I keep my long-term memories and your profile, though. Tell me if there is something specific to forget."
+        save_telemetry(user_input, reply, ["rule_bypass"], False)
+        yield frame("done", text=reply)
+        return
+
+    ack = acknowledgement_reply(user_input)
+    rule_reply = ack or rule_based_response(user_input)
     if rule_reply:
+        # Whatever the last tool returned is not relevant to a greeting/thanks.
+        LAST_TOOL_RESULT = ""
+        if ack:
+            LAST_TURN_TIMING["user_mood"] = user_mood = "happy"
         save_telemetry(user_input, rule_reply, ["rule_bypass"], False)
         yield frame("done", text=rule_reply)
         return
 
+    toolish = skill is not None and skill != "einstein" or any(h in user_input.lower() for h in FILLER_TOOL_HINTS)
+    turned_on_now = bool(EINSTEIN_MODE_RE.search(user_input))
+    if turned_on_now:
+        _EINSTEIN_ON = True
+    if turned_on_now or skill == "einstein" or (_EINSTEIN_ON and not toolish):
+        yield from _einstein_turn(user_input, user_mood, switched_on=turned_on_now)
+        return
+
+    # Past this point a real generation (and maybe a tool call) is about to
+    # happen, which is exactly the gap a filler should cover. handle_client
+    # speaks this in a background thread the moment it sees the frame, so it
+    # overlaps with generation instead of adding to the wait.
+    if skill:
+        # The browser recolours itself for the skill that is answering.
+        yield frame("skill", skill=skill, ui=ui_for(skill))
+    filler = pick_filler(user_input, user_mood)
+    if filler:
+        LAST_TURN_TIMING["filler"] = filler[0]
+        yield frame("filler", text=filler[0], mood=filler[1])
+
+    global _PROACTIVE_SAID
+    said_first, _PROACTIVE_SAID = _PROACTIVE_SAID, ""
     # Format user prompt, injecting past tool data if present
     if LAST_TOOL_RESULT:
-        augmented_input = f"[System Note: Tool execution returned: {LAST_TOOL_RESULT}]\n\n{user_input}"
+        augmented_input = (
+            "[Context only — the result of your previous tool call. Answer the message "
+            "below on its own terms; do not repeat or summarise this unless the user "
+            f"asks about it: {LAST_TOOL_RESULT}]\n\n{user_input}"
+        )
         LAST_TOOL_RESULT = ""
     else:
         augmented_input = user_input
+    if said_first:
+        augmented_input = f'[You had just asked him, unprompted: "{said_first}" His message below is probably his answer.]\n\n{augmented_input}'
 
-    # Retrieve the persistent profile and any relevant semantic memories
+    # Retrieve the persistent profile, relevant semantic memories, and any
+    # pending tasks/reminders
     profile = MEMORY.get_persistent_profile()
     memories = MEMORY.search(user_input, top_k=3)
+    upcoming_tasks = TASKS.get_upcoming(5)
     _t["memory"] = time.time()
 
     system_text = PERSONA
+    if skill:
+        system_text += f"\n\n[Tools for this request]\n{manifest_text(skill)}"
     if profile:
         profile_str = json.dumps(profile, ensure_ascii=False)
         system_text += f"\n[User Profile Data]: {profile_str}"
@@ -477,6 +978,12 @@ def stream_skye_response(user_input: str):
     if memories:
         memories_str = "\n".join([f"- {m}" for m in memories])
         system_text += f"\n[Relevant Past Memories]:\n{memories_str}"
+
+    if upcoming_tasks:
+        tasks_str = "\n".join(
+            f"- {t['description']} ({format_due(t['due_at'])})" for t in upcoming_tasks
+        )
+        system_text += f"\n[Upcoming Tasks]:\n{tasks_str}"
 
     # Ensure a fresh system message is at the top or update existing
     if not SHARED_MESSAGES or SHARED_MESSAGES[0]["role"] != "system":
@@ -492,7 +999,10 @@ def stream_skye_response(user_input: str):
 
     with MODEL_LOCK:
         prompt = tokenizer.apply_chat_template(
-            SHARED_MESSAGES, tokenize=False, add_generation_prompt=True
+            SHARED_MESSAGES,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=False,
         )
 
     assistant_history = [
@@ -504,14 +1014,20 @@ def stream_skye_response(user_input: str):
     # Generate
     with MODEL_LOCK:
         buffer, _raw_full, streaming, suppressed = "", "", False, False
+        _last_chunk = None
         for chunk in stream_generate(
             model,
             tokenizer,
             prompt=prompt,
-            max_tokens=150,
+            # Was 150 — too tight for the persona's new "explain properly"
+            # length target (~4-6 sentences); that could get cut off
+            # mid-thought before this was raised. MAX_WORDS/MAX_SENTENCES
+            # guardrails below still apply on top of this.
+            max_tokens=320,
         ):
             piece = chunk.text
             _raw_full += piece
+            _last_chunk = chunk
 
             if suppressed:
                 # Tool call: keep generating so the JSON completes and the tool
@@ -531,12 +1047,33 @@ def stream_skye_response(user_input: str):
             else:
                 yield frame("token", text=piece)
 
-        raw_response = _raw_full.split("<|eot_id|>")[0].strip()
+        raw_response = _raw_full.split("<turn|>")[0].strip()
 
         _t["generate"] = time.time()
 
     # Tool Extraction
     tool_name, tool_args, pure_narration = extract_function_call(raw_response)
+
+    # The model sometimes invents a tool ("tell_jokes") for something it should
+    # simply answer. Ask again, telling it there is no tool for this.
+    if tool_name and tool_name not in TOOL_ROUTES and tool_name not in SAFETY_BLOCKLIST:
+        print(f"[unknown tool {tool_name!r}: answering directly]")
+        retry = [dict(m) for m in SHARED_MESSAGES]
+        retry[-1]["content"] += "\n\n[There is no tool for this. Answer directly, in your own words, in one to three sentences.]"
+        with MODEL_LOCK:
+            retry_prompt = tokenizer.apply_chat_template(
+                retry, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            )
+            retry_text = ""
+            for chunk in stream_generate(model, tokenizer, prompt=retry_prompt, max_tokens=200):
+                retry_text += chunk.text
+        raw_response = retry_text.split("<turn|>")[0].strip()
+        tool_name, tool_args, pure_narration = extract_function_call(raw_response)
+        if tool_name:   # still a tool call: give up on it rather than loop
+            tool_name, tool_args, pure_narration = None, None, None
+            raw_response = "I do not have a tool for that, but I am happy to talk it through."
+        else:
+            yield frame("token", text=raw_response)
 
     # If a tool matched cleanly, pure_narration is set. Otherwise, we sanitise the raw string
     # to kill any broken CALL_FUNC artifacts.
@@ -549,14 +1086,28 @@ def stream_skye_response(user_input: str):
         print(f"[guardrails fired: {guardrails}]")
     final_narration = guarded.strip()
 
+    canvas_payload = None
     # Tool Execution
-    if tool_name:
+    if tool_name in CONFIRM_TOOLS:
+        _PENDING.update(tool=tool_name, args=tool_args or {}, at=time.time())
+        tool_reply = f"I am about to {_describe_action(tool_name, tool_args)}. Shall I go ahead?"
+    elif tool_name:
         tool_reply = call_function_safe(tool_name, tool_args)
+    if tool_name:
+        _t["tool"] = time.time()
         tool_reply_str = (
             json.dumps(tool_reply, ensure_ascii=False)
             if isinstance(tool_reply, (dict, list))
             else str(tool_reply)
         )
+
+        tool_reply_str, canvas_payload = _split_canvas(tool_reply_str)
+        if tool_reply_str.startswith(WEB_SOURCES_MARKER):
+            tool_reply_str = synthesize_web_answer(
+                user_input, (tool_args or {}).get("query", user_input), tool_reply_str
+            )
+            final_narration = ""
+        _t["synth"] = time.time()
 
         # Merge narration and result for USER display
         if final_narration:
@@ -585,7 +1136,17 @@ def stream_skye_response(user_input: str):
     else:
         # Append ONLY the model's generated narration! We never append the raw tool
         # result block into the Assistant's own mouth, otherwise it will mimic it later.
-        SHARED_MESSAGES.append({"role": "assistant", "content": final_narration})
+        # A tool turn has no narration; recording it as an empty assistant
+        # message taught the model that "empty" is what it says — after a few
+        # tool turns in a row it started answering "Undo that." with nothing.
+        # The call it actually made is the honest history, and keeps the
+        # CALL_FUNC format in view.
+        history_text = final_narration
+        if tool_name and not history_text:
+            history_text = f"CALL_FUNC: {json.dumps({'name': tool_name, 'arguments': tool_args}, ensure_ascii=False)}"
+        SHARED_MESSAGES.append({"role": "assistant", "content": history_text})
+
+    _save_conversation_state()
 
     save_telemetry(
         user_input, final_output, guardrails, bool(tool_name), tool_name, tool_args
@@ -600,7 +1161,80 @@ def stream_skye_response(user_input: str):
         f"prompt_tokens ~{len(prompt)//4} | out_tokens ~{len(_raw_full)//4}"
     )
 
+    _end = time.time()
+    _tool_end = _t.get("tool", _t["generate"])
+    LAST_TURN_TIMING.update(
+        turn=TURN_INDEX - 1,
+        tool=tool_name,
+        history_msgs=len(SHARED_MESSAGES),
+        prompt_tokens=getattr(_last_chunk, "prompt_tokens", None),
+        prompt_tps=round(getattr(_last_chunk, "prompt_tps", 0) or 0, 1),
+        gen_tokens=getattr(_last_chunk, "generation_tokens", None),
+        gen_tps=round(getattr(_last_chunk, "generation_tps", 0) or 0, 1),
+        memory_ms=round((_t["memory"] - _t["start"]) * 1000),
+        generate_ms=round((_t["generate"] - _t["memory"]) * 1000),
+        tool_ms=round((_tool_end - _t["generate"]) * 1000),
+        web_synth_ms=round((_t["synth"] - _tool_end) * 1000) if "synth" in _t else 0,
+        total_llm_ms=round((_end - _t["start"]) * 1000),
+    )
+
+    if tool_name and canvas_payload:
+        yield frame("canvas", **canvas_payload)
     yield frame("done", text=final_output)
+
+
+def _einstein_turn(user_input: str, user_mood: str, switched_on: bool = False):
+    """Einstein mode: a hard question goes to Gemini with extended thinking.
+    SKYE speaks a short summary; the full answer goes to the screen in a
+    `detail` frame. Only the question and a small background note are sent
+    (see core/einstein.py). `switched_on` means he just said "Einstein mode":
+    with no question in that sentence, the previous question is re-answered."""
+    global SHARED_MESSAGES, LAST_TOOL_RESULT
+    LAST_TOOL_RESULT = ""
+    yield frame("skill", skill="einstein", ui=ui_for("einstein"), lock=bool(_EINSTEIN_ON) or None)
+
+    prev = None
+    for m in reversed(SHARED_MESSAGES):
+        if m["role"] == "user":
+            prev = m["content"].split("\n\n")[-1]
+            break
+
+    question = einstein.clean_question(user_input)
+    rest = [w for w in re.findall(r"[a-z']+", question.lower()) if w not in EINSTEIN_FILLER_WORDS]
+    if switched_on and len(rest) < 2:
+        if not prev:
+            reply = "Einstein mode is on. What would you like me to think about?"
+            SHARED_MESSAGES.append({"role": "user", "content": user_input})
+            SHARED_MESSAGES.append({"role": "assistant", "content": reply})
+            save_telemetry(user_input, reply, ["rule_bypass"], False)
+            yield frame("done", text=reply)
+            return
+        question, prev = prev, None    # redo the last question properly
+
+    _f = random.choice(einstein.FILLERS)
+    LAST_TURN_TIMING["filler"] = _f
+    yield frame("filler", text=_f, mood="calm")
+    yield frame("start")
+    context = einstein.background(MEMORY.get_persistent_profile(), prev)
+
+    t0 = time.time()
+    try:
+        summary, detail, model = einstein.think(question, context)
+        sent = "Sent to Gemini (" + model + "): your question" + (" and a short background note." if context else " only.")
+        yield frame("detail", question=question, text=detail, note=sent)
+        reply = summary
+    except RuntimeError as e:
+        print(f"[einstein] failed: {e}")
+        reply = "I could not reach Gemini just now, so I could not think that through. Try again in a moment."
+    LAST_TURN_TIMING.update(turn=TURN_INDEX, tool="einstein", total_llm_ms=round((time.time() - t0) * 1000))
+
+    SHARED_MESSAGES.append({"role": "user", "content": user_input})
+    SHARED_MESSAGES.append({"role": "assistant", "content": reply})
+    if len(SHARED_MESSAGES) > 7:
+        SHARED_MESSAGES = [SHARED_MESSAGES[0]] + SHARED_MESSAGES[-6:]
+    _save_conversation_state()
+    save_telemetry(user_input, reply, [], False, "einstein", {"question": question})
+    yield frame("done", text=reply)
 
 
 def get_skye_response(user_input: str) -> str:
@@ -613,23 +1247,62 @@ def get_skye_response(user_input: str) -> str:
     return final
 
 
+# Thanks-type phrases are unambiguous, so a short sentence containing one is an
+# acknowledgement. Bare approval words ("okay", "great") are not: "Okay there are
+# a few corrections" is the start of a request, so they only count when they
+# are the whole message.
+THANKS_RE = re.compile(
+    r"\b(?:thank(?:s| you)|cheers|much appreciated|appreciate (?:it|that)|"
+    r"(?:that'?s|that is|sounds|it'?s) (?:great|good|perfect|fine|interesting|helpful|brilliant|superb))\b",
+    re.IGNORECASE,
+)
+APPROVAL_ONLY_RE = re.compile(
+    r"^\W*(?:(?:ok|okay|alright|all right|got it|understood|superb|perfect|brilliant|excellent|awesome|cool|nice|great|"
+    r"fair enough|sounds good)\W*)+(?:(?:skye|sky|guy|sir)\W*)?$",
+    re.IGNORECASE,
+)
+# Anything that makes it a request rather than a bare acknowledgement.
+ACK_BLOCK_RE = re.compile(
+    r"\?|\b(?:can|could|would|will|please|set|open|play|search|find|tell|show|list|remind|"
+    r"what|who|when|where|why|how|which|explain|also|and then|but|now)\b",
+    re.IGNORECASE,
+)
+ACK_REPLIES = ["You're welcome, Sir.", "Happy to help.", "Not at all.", "Any time, Sir.", "My pleasure."]
+
+
+def acknowledgement_reply(speech: str):
+    """A short direct reply to a bare "thank you" / "okay great", or None.
+
+    These used to go to the LLM, which — with the previous tool result still
+    attached to the message — dutifully recapped the last answer instead of
+    just replying. Handling them here also makes them instant.
+    """
+    if APPROVAL_ONLY_RE.match(speech):
+        return random.choice(ACK_REPLIES)
+    if len(speech.split()) > 8 or ACK_BLOCK_RE.search(speech) or not THANKS_RE.search(speech):
+        return None
+    return random.choice(ACK_REPLIES)
+
+
+def greeting() -> str:
+    """Time-of-day greeting for the rule-based fast path ("hi skye")."""
+    hour = datetime.now().hour
+    if hour == 0 or hour > 22:
+        return "It's quite late, Good Evening Sir"
+    if hour < 12:
+        return "Good Morning, Sir"
+    if hour <= 15:
+        return "Good Afternoon, Sir"
+    return "Good Evening, Sir"
+
+
 def rule_based_response(speech: str):
     s = speech.lower()
     if any(
         g in s
         for g in ["hi skye", "hello skye", "good morning skye", "good evening skye"]
     ):
-        return Greetings()
-    if s.startswith("open "):
-        target = s.split("open ", 1)[1].strip()
-        sites = {
-            "youtube": "https://youtube.com",
-            "google": "https://google.com",
-            "spotify": "https://open.spotify.com",
-        }
-        if target in sites:
-            webbrowser.open(sites[target])
-            return f"Opening {target}, Sir..."
+        return greeting()
     return None
 
 
@@ -665,25 +1338,235 @@ def start_cli_mode():
     print(f"\nTelemetry saved to logs/telemetry_{SESSION_ID}.jsonl\nSystems OFFLINE.")
 
 
+def _speak_filler(conn, send_lock, phrase, mood, cancel):
+    """Sends a filler phrase's (pre-synthesized, cached) audio in the background.
+
+    The audio comes from tts.cached_phrase(), so this costs no GPU while the
+    LLM is generating — it used to run TTS concurrently with generation and
+    slow both. Still on its own thread so the (small) disk read and socket
+    write never delay the main turn. Every send goes through `send_lock` so a
+    frame is never interleaved byte-for-byte with one from the turn thread.
+    """
+    try:
+        pcm = tts.cached_phrase(phrase, mood)
+        if cancel.is_set():
+            return
+        with send_lock:
+            conn.sendall(
+                frame(
+                    "audio_chunk",
+                    pcm=base64.b64encode(pcm).decode("ascii"),
+                    sample_rate=24000,
+                    final=False,
+                )
+            )
+    except Exception as e:
+        print(f"[Filler TTS error]: {e}")
+
+
+def _broadcast_proactive(text: str):
+    """Pushes an unprompted spoken message to every currently-connected client.
+
+    Same shape as a normal turn's outbound frames (a text frame the client
+    displays, then audio_chunk/turn_end for the synthesized voice) except
+    nothing preceded it — no inbound message ever triggered this. Only
+    reaches a browser tab because clients/browser.py's bridge now pumps
+    TCP->WS continuously instead of only right after forwarding a message.
+    """
+    with ACTIVE_CONNECTIONS_LOCK:
+        targets = list(ACTIVE_CONNECTIONS)
+    for conn, send_lock in targets:
+        try:
+            with send_lock:
+                conn.sendall(frame("proactive", text=text))
+            for pcm, is_final in tts.synthesize_reply(text):
+                with send_lock:
+                    conn.sendall(
+                        frame(
+                            "audio_chunk",
+                            pcm=base64.b64encode(pcm).decode("ascii"),
+                            sample_rate=24000,
+                            final=is_final,
+                        )
+                    )
+            with send_lock:
+                conn.sendall(frame("turn_end"))
+        except Exception as e:
+            print(f"[Proactive broadcast error]: {e}")
+
+
 def handle_client(conn):
-    with conn:
-        while True:
-            data = conn.recv(4096)
-            if not data:
+    reader = FrameReader()
+    send_lock = threading.Lock()
+    with ACTIVE_CONNECTIONS_LOCK:
+        ACTIVE_CONNECTIONS.append((conn, send_lock))
+    try:
+        _handle_client_loop(conn, reader, send_lock)
+    finally:
+        with ACTIVE_CONNECTIONS_LOCK:
+            if (conn, send_lock) in ACTIVE_CONNECTIONS:
+                ACTIVE_CONNECTIONS.remove((conn, send_lock))
+
+
+class CancelEvent(threading.Event):
+    """A cancel flag that remembers when and why it was set, so telemetry can
+    show whether an interruption was a real barge-in or (say) SKYE's own voice
+    leaking into the microphone."""
+
+    def __init__(self):
+        super().__init__()
+        self.set_at = None
+        self.info = None
+
+    def set(self, info=None):
+        if not self.is_set():
+            self.set_at, self.info = time.time(), info
+            super().set()
+
+
+def _run_turn(conn, send_lock, user_speech, cancel):
+    """One full turn: LLM (+ tools), then speech. `cancel` is set when the user
+    barges in or sends a newer request; it stops speech synthesis between
+    audio chunks (generation itself always completes, so conversation state is
+    never left half-written)."""
+    print(f"[Client]: {user_speech}")
+    t_turn = time.time()
+    reply = ""
+    for f in stream_skye_response(user_speech):
+        with send_lock:
+            conn.sendall(f)
+        payload = json.loads(f.decode())
+        if payload["type"] == "filler":
+            threading.Thread(
+                target=_speak_filler,
+                args=(conn, send_lock, payload["text"], payload.get("mood", "calm"), cancel),
+                daemon=True,
+            ).start()
+        elif payload["type"] == "done":
+            reply = payload["text"]
+
+    timing = dict(LAST_TURN_TIMING)
+    tts_t, first_audio_ms, chunks, mood = {}, None, 0, None
+    if reply.strip() and not cancel.is_set():
+        mood = MOOD.final_mood(timing.get("user_mood", "calm"), reply)
+        with send_lock:
+            conn.sendall(frame("mood", mood=mood, emotion=timing.get("emotion")))
+        for pcm, is_final in tts.synthesize_reply(
+            reply, params=MOOD_PARAMS[mood], cancel=cancel, timings=tts_t
+        ):
+            if cancel.is_set():
                 break
-            user_speech = data.decode().strip()
-            print(f"[Client]: {user_speech}")
-            try:
-                reply = ""
-                for f in stream_skye_response(user_speech):
-                    conn.sendall(f)
-                    payload = json.loads(f.decode())
-                    if payload["type"] == "done":
-                        reply = payload["text"]
-                print(f"[Reply]: {reply}")
-            except Exception as e:
-                print(f"[Socket send error]: {e}")
-                break
+            if first_audio_ms is None:
+                first_audio_ms = round((time.time() - t_turn) * 1000)
+            chunks += 1
+            with send_lock:
+                conn.sendall(
+                    frame(
+                        "audio_chunk",
+                        pcm=base64.b64encode(pcm).decode("ascii"),
+                        sample_rate=24000,
+                        final=is_final,
+                    )
+                )
+    # Always closes the turn — including a cancelled one, so the client knows
+    # to stop discarding audio and the next turn's chunks aren't dropped.
+    with send_lock:
+        conn.sendall(frame("turn_end"))
+
+    timing.update(
+        cancelled=cancel.is_set(),
+        mood=mood,
+        cancel_after_ms=(
+            round((cancel.set_at - t_turn) * 1000) if cancel.set_at else None
+        ),
+        cancel_info=cancel.info,
+        tts_first_chunk_ms=tts_t.get("first_chunk_ms"),
+        tts_total_ms=tts_t.get("total_ms"),
+        tts_chunks_sent=chunks,
+        first_audio_ms=first_audio_ms,
+        turn_total_ms=round((time.time() - t_turn) * 1000),
+    )
+    try:
+        with open(TIMING_FILE, "a") as tf:
+            tf.write(json.dumps(timing) + "\n")
+    except OSError:
+        pass
+    print(f"[Reply{' (cancelled)' if cancel.is_set() else ''}]: {reply}")
+
+
+def _handle_client_loop(conn, reader, send_lock):
+    """Reads frames continuously on this thread while turns run on a worker.
+
+    Previously one thread did both: it read a message, ran the whole turn
+    (LLM *and* synthesizing every sentence), and only then read the next
+    message. So a barge-in's audio sat unread until the old reply had finished
+    synthesizing, and the interrupted reply kept synthesizing (and being sent)
+    after the user had already started talking. Now this thread only reads —
+    audio is transcribed and 'cancel'/'text' frames are acted on immediately —
+    and turns are queued to a single worker so they still run one at a time.
+    """
+    turns = queue.Queue()
+    state = {"cancel": CancelEvent()}
+
+    def worker():
+        with mx.stream(MLX_STREAM):
+            while True:
+                item = turns.get()
+                if item is None:
+                    return
+                text, cancel = item
+                try:
+                    _run_turn(conn, send_lock, text, cancel)
+                except Exception as e:
+                    print(f"[Socket send error]: {e}")
+                    return
+
+    threading.Thread(target=worker, daemon=True).start()
+
+    try:
+        with conn, mx.stream(MLX_STREAM):
+            while True:
+                data = conn.recv(4096)
+                if not data:
+                    break
+                for msg in reader.feed(data):
+                    kind = msg.get("type")
+                    if kind == "cancel":
+                        # Barge-in: stop speaking the current reply.
+                        state["cancel"].set({k: v for k, v in msg.items() if k != "type"})
+                    elif kind == "voice_event":
+                        # A sleep/cancel command the browser deliberately never
+                        # turns into a real turn (no reply, no tool, no LLM
+                        # call) — it still gets a telemetry row so there is a
+                        # record of it having been said at all.
+                        text = (msg.get("text") or "").strip()
+                        if text:
+                            label = {"sleep": "(went to sleep — no reply, by design)",
+                                     "cancel": "(cancelled — no reply, by design)"}.get(msg.get("kind"), "(no reply, by design)")
+                            save_telemetry(text, label, ["silent_voice_command"], False)
+                    elif kind == "presence":
+                        PROACTIVE.asleep = bool(msg.get("asleep"))
+                    elif kind == "audio":
+                        pcm = base64.b64decode(msg["pcm"])
+                        transcript = stt.transcribe_pcm(
+                            pcm, sample_rate=msg.get("sample_rate", 16000)
+                        ).strip()
+                        with send_lock:
+                            conn.sendall(frame("transcript", text=transcript))
+                    elif kind == "text":
+                        user_speech = msg.get("text", "").strip()
+                        if not user_speech:
+                            continue
+                        PROACTIVE.last_input = time.time()
+                        stt.remember(user_speech)
+                        # A new request supersedes whatever is still being
+                        # spoken from the previous one.
+                        state["cancel"].set({"reason": "superseded"})
+                        state["cancel"] = CancelEvent()
+                        turns.put((user_speech, state["cancel"]))
+    finally:
+        state["cancel"].set()
+        turns.put(None)
 
 
 def start_server_mode():
@@ -698,6 +1581,15 @@ def start_server_mode():
         threading.Thread(target=run_async_ws, daemon=True).start()
     except Exception as bridge_err:
         print(f"[Bridge Error]: Could not automatically open browser UI: {bridge_err}")
+
+    threading.Thread(target=_scheduler_loop, daemon=True).start()
+
+    # Synthesize every filler phrase now (a no-op once cached on disk) so the
+    # first one a user triggers is instant instead of waiting on the engine.
+    threading.Thread(
+        target=lambda: [tts.cached_phrase(p, m) for m, ps in [*FILLERS.items(), ("calm", TOOL_FILLERS), ("calm", einstein.FILLERS), ("calm", [einstein.VIDEO_FILLER])] for p in ps],
+        daemon=True,
+    ).start()
 
     with socket.socket() as server_socket:
         server_socket.bind((HOST, PORT))

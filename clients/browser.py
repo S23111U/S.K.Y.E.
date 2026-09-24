@@ -26,7 +26,11 @@ from core.protocol import FrameReader
 # ---------- Serve HTML over HTTP ----------
 def start_http_server():
     os.chdir(BASE_DIR)  # Serve from project root
-    handler = http.server.SimpleHTTPRequestHandler
+    class handler(http.server.SimpleHTTPRequestHandler):
+        def end_headers(self):
+            # Always serve the latest UI; a cached page hid earlier changes.
+            self.send_header("Cache-Control", "no-store")
+            super().end_headers()
     with socketserver.TCPServer(("", HTTP_PORT), handler) as httpd:
         print(f"🌍 UI available at http://localhost:{HTTP_PORT}/{HTML_PATH}")
         httpd.serve_forever()
@@ -38,29 +42,58 @@ def open_browser():
 
 
 # ---------- WebSocket <-> TCP Bridge ----------
+# Two independent pumps rather than one send-then-wait-for-reply loop. The
+# old version only ever read from the TCP socket right after forwarding a
+# browser message, so anything SKYE pushed onto that socket unprompted (a
+# proactive check-in, fired from the server's own scheduler thread with no
+# browser message to trigger it) would sit in the kernel receive buffer
+# until the browser happened to send its next message — then get read out
+# of order and get spliced into that unrelated reply. Running both
+# directions concurrently means a server-initiated frame reaches the browser
+# the moment it arrives, regardless of what the browser is doing.
+async def _pump_ws_to_tcp(websocket, sock, loop):
+    async for message in websocket:
+        print(f"[Browser]: {message}")
+        await loop.sock_sendall(sock, message.encode())
+
+
+async def _pump_tcp_to_ws(websocket, sock, loop):
+    reader = FrameReader()
+    while True:
+        chunk = await loop.sock_recv(sock, 4096)
+        if not chunk:
+            return
+        for f in reader.feed(chunk):
+            await websocket.send(json.dumps(f))
+
+
 async def handle_browser(websocket):
     print("🌐 Browser connected")
     loop = asyncio.get_event_loop()
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((AI_HOST, AI_PORT))
-    reader = FrameReader()
+    # loop.sock_recv/sock_sendall require a non-blocking socket to actually
+    # yield to the event loop instead of blocking the whole thread. The old
+    # single-pump version got away without this — one coroutine per
+    # connection meant a blocking wait was merely wasted concurrency, not a
+    # deadlock. With two pumps on the same connection, a blocking sock_recv
+    # in one freezes the loop and starves the other outright.
+    sock.setblocking(False)
 
+    tasks = [
+        asyncio.ensure_future(_pump_ws_to_tcp(websocket, sock, loop)),
+        asyncio.ensure_future(_pump_tcp_to_ws(websocket, sock, loop)),
+    ]
     try:
-        async for message in websocket:
-            print(f"[Browser]: {message}")
-            await loop.sock_sendall(sock, message.encode())
-
-            while True:
-                chunk = await loop.sock_recv(sock, 4096)
-                if not chunk:
-                    return
-                done = False
-                for f in reader.feed(chunk):
-                    await websocket.send(json.dumps(f))
-                    if f["type"] in ("done", "error"):
-                        done = True
-                if done:
-                    break
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for t in pending:
+            t.cancel()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for t in done:
+            exc = t.exception()
+            if exc:
+                raise exc
     except Exception as e:
         print("Browser disconnected:", e)
     finally:

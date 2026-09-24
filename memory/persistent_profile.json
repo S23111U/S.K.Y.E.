@@ -1,0 +1,25 @@
+{
+    "routine": {
+        "sleep_time": [
+            "Around 10:00 PM (based on the final instruction)"
+        ]
+    },
+    "user": {
+        "current_location": [
+            "Sydney"
+        ],
+        "interest": [
+            "Sydney rental market rates (specifically 1 BHK in Redfern)"
+        ],
+        "preferred_addressing": [
+            "Sky"
+        ],
+        "academic_background": [
+            "Master's degree in DSA"
+        ],
+        "current_topic_of_interest": [
+            "Proof of correctness for algorithms",
+            "Fibonacci series and its relation to natural numbers/golden ratio"
+        ]
+    }
+}

@@ -13,11 +13,19 @@ from memory.manager import MemoryManager
 # [PILLAR 3: SEMANTIC INGESTOR]
 # =========================================================
 
-def ingest_all_logs():
+def ingest_all_logs(memory: MemoryManager = None):
+    """Embeds dialogue pairs from logs into Tier 2 semantic memory.
+
+    Accepts an already-instantiated MemoryManager (the in-process nightly
+    scheduler in core_v2.py passes its own global `MEMORY`) so this doesn't
+    load a second copy of the sentence-transformers embedding model; standalone
+    runs still construct their own as before.
+    """
     print("[MLOps]: Starting historical log ingestion for Tier 2 semantics...")
-    
-    memory = MemoryManager(ROOT)
-    log_files = glob.glob(os.path.join(ROOT, "logs", "*.jsonl")) + glob.glob(os.path.join(ROOT, "logs", "processed_logs", "*.jsonl"))
+
+    if memory is None:
+        memory = MemoryManager(ROOT)
+    log_files = glob.glob(os.path.join(ROOT, "logs", "telemetry_*.jsonl")) + glob.glob(os.path.join(ROOT, "logs", "processed_logs", "telemetry_*.jsonl"))
     
     if not log_files:
         print("[MLOps]: No logs found to ingest.")
@@ -35,6 +43,12 @@ def ingest_all_logs():
                     assistant_output = data.get("assistant_output", "")
                     
                     if not user_input or not assistant_output:
+                        continue
+
+                    # Answers derived from web_search are not durable facts:
+                    # they go stale, and (seen in practice) a wrong one stored
+                    # here gets recalled later in preference to a fresh search.
+                    if (data.get("response_stats") or {}).get("tool_dispatched") in ("web_search", "read_messages", "unread_messages"):   # not durable facts / private
                         continue
                         
                     # We chunk the dialogue pair into a single semantic unit
