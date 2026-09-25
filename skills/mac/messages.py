@@ -109,8 +109,8 @@ def _who(handle):
         key = digits[-9:] if len(digits) >= 9 else handle
         script = f'''tell application "Contacts"
   repeat with p in people
-    repeat with ph in (value of phones of p)
-      if (do shell script "echo " & quoted form of (ph as text) & " | tr -cd '0-9'") ends with "{key}" then return name of p
+    repeat with ph in (phones of p)
+      if (do shell script "echo " & quoted form of (value of ph as text) & " | tr -cd '0-9'") ends with "{key}" then return name of p
     end repeat
   end repeat
   return ""
@@ -133,11 +133,11 @@ def _handles_for(contact):
         r = subprocess.run(["osascript", "-e", f'''tell application "Contacts"
   set out to {{}}
   repeat with p in (every person whose name contains "{c.replace('"', '')}")
-    repeat with ph in (value of phones of p)
-      set end of out to (ph as text)
+    repeat with ph in (phones of p)
+      set end of out to (value of ph)
     end repeat
-    repeat with em in (value of emails of p)
-      set end of out to (em as text)
+    repeat with em in (emails of p)
+      set end of out to (value of em)
     end repeat
   end repeat
   set AppleScript's text item delimiters to "|"
