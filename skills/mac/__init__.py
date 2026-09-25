@@ -13,6 +13,7 @@ from skills.mac.apps import (
     music_control, music_now_playing, music_play, open_app, open_in_safari,
     read_apple_note, start_studying,
 )
+from skills.mac.calling import facetime_call, phone_call
 from skills.mac.messages import read_messages, unread_messages
 from skills.routing_helpers import END, I, LEAD
 
@@ -27,25 +28,31 @@ SKILL = Skill(
         "play some music on apple music", "add a note to my apple notes", "create a note about the meeting",
         "open the reminders app", "open safari and search for something", "what reminders do I have in the reminders app",
         "do I have any new messages", "what did someone text me",
+        "facetime mom", "call dad", "video call my sister", "give sarah a call",
     ],
     pattern=re.compile(
         r"\b(?:apple music|apple notes|reminders app|safari|(?:the |my )?music|(?:a |an )?(?:new )?note(?: called| about| on)|"
-        r"(?:add|append) .{0,40} to (?:my |the )?note|messages?|texts?|imessages?)\b",
+        r"(?:add|append) .{0,40} to (?:my |the )?note|messages?|texts?|imessages?|"
+        r"facetime|video[- ]call|phone call|\b(?:call|dial|ring)\s+[\w' -]{2,30}\b)\b",
         re.IGNORECASE,
     ),
     manifest=(
         "Mac tools (his MacBook apps): music_play{\"query\"} · music_control{\"action\"} · music_now_playing{} · "
         "open_in_safari{\"target\"} · open_app{\"name\"} · create_note{\"title\",\"body\"} · add_to_note{\"title\",\"text\"} · "
         "find_notes{\"query\"} · read_apple_note{\"title\"} · list_mac_reminders{} · complete_mac_reminder{\"title\"} · "
-        "read_messages{\"contact\",\"limit\"} · unread_messages{}. "
+        "read_messages{\"contact\",\"limit\"} · unread_messages{} · facetime_call{\"contact\",\"audio_only\"} · phone_call{\"contact\"}. "
         "music_control action is pause, resume, next, previous or \"volume 40\". Messages/texts means his iMessage/SMS — "
         "read_messages with no contact gives the newest ones, with a contact name gives that exchange. "
+        "facetime_call/phone_call take a contact name, number or email; only call one when he's clearly asking to place a "
+        "call to someone, not for figures of speech like \"call it a day\". "
         "Never say something was done unless you called the tool for it."
     ),
     examples=[
         ("add eggs to my groceries note", '{"name": "add_to_note", "arguments": {"title": "groceries", "text": "eggs"}}'),
         ("open the news in safari", '{"name": "open_in_safari", "arguments": {"target": "news"}}'),
         ("do I have any new messages?", '{"name": "unread_messages", "arguments": {}}'),
+        ("call mom", '{"name": "phone_call", "arguments": {"contact": "mom"}}'),
+        ("facetime dad", '{"name": "facetime_call", "arguments": {"contact": "dad"}}'),
     ],
     tools=[
         open_in_safari, open_app, start_studying,
@@ -53,8 +60,17 @@ SKILL = Skill(
         list_mac_reminders, complete_mac_reminder,
         create_note, add_to_note, find_notes, read_apple_note,
         read_messages, unread_messages,
+        facetime_call, phone_call,
     ],
     direct_routes=[
+        # Unambiguous calling phrasings only — plain "call X" is left to the
+        # model, since "call it a day" / "what should I call it" etc. would
+        # otherwise dial a real number with no one deciding it's a real call.
+        ("facetime_call", re.compile(r"^\W*" + LEAD + r"(?:facetime|video call)\s+(?:my |the )?(?P<c>[\w' -]+?)" + END, I),
+         lambda m: {"contact": m.group("c").strip()}),
+        ("phone_call", re.compile(r"^\W*" + LEAD + r"phone call\s+(?:my |the )?(?P<c>[\w' -]+?)" + END, I),
+         lambda m: {"contact": m.group("c").strip()}),
+
         # "I want to study on Index 0" (Whisper may hear "index zero" / "index O")
         ("start_studying", re.compile(
             r"\b(?:study|studying|learn|learning|revise|revising)\b.{0,40}\bindex(?:\s+(?:0|zero|o))?\b|"
